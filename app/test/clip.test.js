@@ -228,7 +228,14 @@ test("a second clip lands on the same wall and snapshots the first", async () =>
   // Straight from the backend's map: listAll() hides dot directories, which is
   // the whole point of them.
   const history = [...be.files.keys()].filter((p) => p.startsWith(".history/"));
-  assert.equal(history.length, 1, "the overwrite was snapshotted, the create was not");
+  /* Two OVERWRITES, so two snapshots — one per write, never one per second.
+     Clip 1 creates the wall and then writes the item into it, snapshotting the
+     empty wall; clip 2 writes the second item, snapshotting the one-item wall.
+     Neither create is snapshotted, which is what this line has always been
+     checking. It asserted 1 until the snapshot filename gained sub-second
+     uniqueness: both writes landed in the same second, so the second silently
+     overwrote the first and the count that proved it was itself the symptom. */
+  assert.equal(history.length, 2, "one snapshot per overwrite; the creates are not snapshotted");
 });
 
 test("a page clip is a note with a url — what the convention calls a bookmark", async () => {

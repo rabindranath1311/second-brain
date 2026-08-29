@@ -11,6 +11,7 @@ import {
   vaultFingerprint, sameVault, reconnectOutcome, newUlid, vaultNotices,
 } from "../vault/vault.js";
 import { serialize, parse, escapeUser, unescapeUser, roundtripOk } from "../vault/mdfile.js";
+import { Data } from "../vault/data.js";
 
 const TS = "2026-07-30T12:00:00+00:00";
 const page = (over = {}) => ({
@@ -942,4 +943,63 @@ test("a closing tab can finish the write it already started", async () => {
   // …and it shuts again when a frozen document comes back from the bfcache.
   el.resume();
   assert.equal(el.closing, false);
+});
+
+// ── a conflict copy is a page of its own ────────────────────────────────────
+// A byte copy carried the original's `id:`. Two files then claimed one ULID,
+// and because a space sorts before a dot the COPY won the id — so the next
+// autosave wrote into it and destroyed the version the copy exists to keep.
+
+test("a conflict copy gets a fresh id, and the next save cannot land on it", async () => {
+  let t = 0;
+  const be = new MemoryBackend();
+  const v = new Vault(be, { now: () => `2026-08-29T12:00:0${t}+00:00` });
+  await v.buildIndex();
+  const d = new Data(v);
+
+  const a = await d.createPage({ kind: "note", title: "A", body: "MINE v1" });
+
+  t = 1;                                       // Obsidian edits it underneath
+  const raw = await be.readText(a.path);
+  await be.writeText(a.path, raw
+    .replace(/^updated: .*$/m, "updated: 2026-08-29T23:00:00+00:00")
+    .replace("MINE v1", "OBSIDIAN TEXT"));
+
+  t = 2;
+  assert.equal((await d.updatePage(a.id, { body: "MINE v2" })).reason, "conflict");
+
+  t = 3;
+  await d.updatePage(a.id, { body: "MINE v2", force: true });
+  const copy = "notes/A (conflict 2026-08-29).md";
+  assert.ok(await be.exists(copy), "the disk version is preserved beside it");
+
+  const [liveFm] = parse(await be.readText(a.path));
+  const [copyFm] = parse(await be.readText(copy));
+  assert.notEqual(copyFm.id, liveFm.id, "two files must never claim one ULID");
+  assert.equal(copyFm.title, "A (conflict 2026-08-29)", "title follows the filename");
+  assert.equal(v.index.get(a.id).path, a.path, "the id still resolves to the live page");
+  assert.deepEqual(v.warnings, [], "and there is no duplicate-id to warn about");
+
+  t = 4;                                       // the keystroke that used to destroy it
+  await d.updatePage(a.id, { body: "MINE v3" });
+  assert.match(await be.readText(a.path), /MINE v3/);
+  assert.match(await be.readText(copy), /OBSIDIAN TEXT/, "the preserved version survives");
+});
+
+test("the conflict copy is a real page — indexed, listed, openable", async () => {
+  let t = 0;
+  const be = new MemoryBackend();
+  const v = new Vault(be, { now: () => `2026-08-29T12:00:0${t}+00:00` });
+  await v.buildIndex();
+  const d = new Data(v);
+  const a = await d.createPage({ kind: "note", title: "A", body: "MINE" });
+  t = 1;
+  const raw = await be.readText(a.path);
+  await be.writeText(a.path, raw.replace(/^updated: .*$/m, "updated: 2026-08-29T23:00:00+00:00"));
+  t = 2;
+  await d.updatePage(a.id, { body: "MINE v2", force: true });
+
+  const listed = d.pages({ limit: 50 }).items.map((p) => p.path);
+  assert.ok(listed.includes("notes/A (conflict 2026-08-29).md"),
+    "it used to be written and then invisible everywhere in the app");
 });

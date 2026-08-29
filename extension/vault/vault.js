@@ -172,15 +172,43 @@ export class FSABackend {
     await this.writeBytes(to, bytes);
     const parts = from.split("/");
     const name = parts.pop();
-    (await this.#dir(parts)).removeEntry(name);
+    // Awaited. `removeEntry` returns a promise, and an unawaited one meant a
+    // refused delete resolved as a successful MOVE — leaving the file in both
+    // places, with the rejection surfacing later as an unhandled one.
+    await (await this.#dir(parts)).removeEntry(name);
   }
+  /**
+   * The files under one directory, full paths, recursive.
+   *
+   * NOT built on `listAll()`. That is the *index* walk, and it is right to skip
+   * dot-directories — but every caller of `listDir` asks about one:
+   * `.history/<id>` and `.trash/`. Filtering the index walk therefore returned
+   * `[]` for every question anyone actually asks, under the only backend that
+   * touches a real folder. Version history was permanently empty, and the prune
+   * loop that bounds `.history/` never removed anything, so it grew without
+   * limit. Both passed every test, because `MemoryBackend.listDir` is a flat key
+   * filter with no such exclusion — the one place the two backends disagreed
+   * was the one place nothing checked.
+   */
   async listDir(prefix) {
-    return (await this.listAll()).map((f) => f.path).filter((p) => p.startsWith(prefix + "/"));
+    const parts = String(prefix).split("/").filter(Boolean);
+    let dir;
+    try { dir = await this.#dir(parts); } catch { return []; }   // no such directory
+    const out = [];
+    const walk = async (handle, at) => {
+      for await (const [name, h] of handle.entries()) {
+        const p = `${at}/${name}`;
+        if (h.kind === "directory") await walk(h, p);
+        else out.push(p);
+      }
+    };
+    await walk(dir, parts.join("/"));
+    return out.sort((a, b) => a.localeCompare(b));
   }
   async remove(path) {
     const parts = path.split("/");
     const name = parts.pop();
-    (await this.#dir(parts)).removeEntry(name);
+    await (await this.#dir(parts)).removeEntry(name);
   }
   async mkdirp(path) { await this.#dir(path.split("/"), true); }
 }
@@ -787,6 +815,31 @@ export class Vault {
   }
 
   // 5.6 / 5.14 / 5.17 / 5.19 / 5.20 / 5.23
+  /**
+   * The bytes of `path`, with a fresh `id:` and a title matching `dest`'s name —
+   * what a conflict copy must carry so it is a page of its own rather than a
+   * second file claiming somebody else's identity.
+   *
+   * A file we cannot parse is copied verbatim: there is no frontmatter to
+   * re-mint, and refusing to preserve it at all would be worse than preserving
+   * it unindexed.
+   */
+  async #reidentified(path, dest) {
+    const raw = await this.be.readText(path);
+    let fm, body;
+    try { [fm, body] = parse(raw); } catch (_) { return await this.be.readBytes(path); }
+    if (!fm || !fm.id) return await this.be.readBytes(path);
+    const next = { ...fm, id: this.newId() };
+    if (fm.title) next.title = titleFromPath(dest);
+    try {
+      return new TextEncoder().encode(serialize(next, body));
+    } catch (_) {
+      // serialize() refuses anything it cannot round-trip. The copy is a
+      // safety net; keep the bytes rather than lose them to a strict writer.
+      return await this.be.readBytes(path);
+    }
+  }
+
   async put(page) {
     if (!this.mayWrite()) {
       return { ok: false, reason: "not-writer", message: "another tab holds the write lock" };
@@ -869,7 +922,21 @@ export class Vault {
         while (await this.be.exists(dest)) {           // 5.18
           dest = path.replace(/\.md$/, ` (conflict ${day} ${n++}).md`);
         }
-        await this.be.writeBytes(dest, await this.be.readBytes(path));
+        /* The copy gets its OWN identity. A byte copy carried the original's
+           `id:`, and a ULID is the page's identity — CONVENTION says it never
+           changes, which is exactly why two files may never claim one. The cost
+           was not theoretical: a space sorts before a dot, so
+           `A (conflict …).md` sorted ahead of `A.md`, buildIndex resolved the id
+           to the COPY, and the next autosave wrote into it — destroying the very
+           version this branch exists to preserve, seconds after promising to
+           keep it.
+
+           Re-minting also makes the copy a real page: with an id of its own it
+           is indexed, listed, searchable and openable, instead of a file the
+           app told you about once and could never show you again. The title
+           follows the filename so the two are distinguishable in a list, which
+           is CONVENTION rule 3 satisfied rather than worked around. */
+        await this.be.writeBytes(dest, await this.#reidentified(path, dest));
       }
     }
 
@@ -877,7 +944,36 @@ export class Vault {
     if (onDisk) {
       const key = (page.id || entry?.id || path).replace(/[/:]/g, "_");
       const dir = `.history/${key}`;
-      await this.be.writeBytes(`${dir}/${stamp(this.now())}.md`, await this.be.readBytes(path));
+      /* One snapshot per WRITE, not per second. `now()` is second-resolution —
+         correct for `updated:`, which CONVENTION pins to that form — but the
+         editor autosaves on a 600ms debounce, so two saves routinely shared a
+         filename and the later one silently overwrote the earlier snapshot.
+         Seven overwrites left one version. The cap in Settings promises N
+         versions; the real ceiling was one per wall-clock second.
+
+         The suffix is `~N` because `~` (0x7E) sorts AFTER `.` (0x2E), so
+         `…29+00-00.md` still precedes `…29+00-00~2.md` and the prune below —
+         which drops the lexically smallest — keeps dropping the oldest. A
+         separator like `-` or a space sorts BEFORE the dot and would have
+         inverted that, pruning the newest snapshot first. */
+      const base = `${dir}/${stamp(this.now())}`;
+      let existing = [];
+      try { existing = await this.be.listDir(dir); } catch (_) { /* first snapshot */ }
+      /* One beyond the highest suffix already used in this second — NOT the
+         first free name. Probing for a gap reuses a name the prune has just
+         removed, and then the next write lands on it: with keep=3 and seven
+         saves in one second that kept the three OLDEST versions and threw away
+         the newest, which is precisely backwards. */
+      let n = 0;
+      for (const q of existing) {
+        if (q === `${base}.md`) { n = Math.max(n, 1); continue; }
+        const m = q.startsWith(`${base}~`) ? /~(\d+)\.md$/.exec(q) : null;
+        if (m) n = Math.max(n, Number(m[1]));
+      }
+      // Zero-padded so the sort stays chronological past nine: `~010` after
+      // `~009`, where `~10` would sort between `~1` and `~2`.
+      const snap = n === 0 ? `${base}.md` : `${base}~${String(n + 1).padStart(3, "0")}.md`;
+      await this.be.writeBytes(snap, await this.be.readBytes(path));
       const kept = (await this.be.listDir(dir)).sort();
       for (const old of kept.slice(0, Math.max(0, kept.length - this.historyKeep))) {
         await this.be.remove(old);
@@ -1034,8 +1130,9 @@ export class Vault {
       .map((full) => ({
         path: full,
         // `<dir>/2026-08-15T17-04-02.md` → the stamp, which is the only
-        // metadata a snapshot carries.
-        stamp: full.split("/").pop().replace(/\.md$/, ""),
+        // metadata a snapshot carries. The `~N` that disambiguates two saves
+        // inside one second is a filename detail, not something to read out.
+        stamp: full.split("/").pop().replace(/\.md$/, "").replace(/~\d+$/, ""),
       }));
   }
 
