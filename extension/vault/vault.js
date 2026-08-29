@@ -643,6 +643,15 @@ export class Vault {
         // Indexed so "bookmarks" can be a list without opening every note:
         // a bookmark IS a note with a url, and the list must know which ones.
         url: fm.url || null,
+        /* Structural references, kept RAW — CONVENTION writes them as quoted
+           wikilinks (`parent: "[[X]]"`) and resolving one needs the whole
+           index, which does not exist yet halfway through the walk. `data.js`
+           turns them into ids on the way out. Indexed rather than read per
+           page because the parent's sub-page list is a scan: a child names
+           its parent, and nothing names its children. */
+        parent: fm.parent || null,
+        children: Array.isArray(fm.children) ? fm.children
+          : fm.children ? [fm.children] : [],
         updated: fm.updated || null,
         mtime: f.mtime,
         stamped,
@@ -724,6 +733,7 @@ export class Vault {
       id: `path:${f.path}`, path: f.path, kind: inferKind(f.path),
       title: f.path.split("/").pop().replace(/\.md$/, ""),
       tags: [], aliases: [], mentions: [], excerpt: "",
+      parent: null, children: [],
       updated: null, mtime: f.mtime, stamped: false, unparseable: why,
     };
   }

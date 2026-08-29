@@ -434,3 +434,106 @@ test("createPage refuses a kind that does not exist", async () => {
   assert.equal(r.reason, "unknown-kind");
   assert.equal(await v.be.exists("notes/Nope.md"), false, "must not mis-file it into notes/");
 });
+
+// ── Sub-pages ───────────────────────────────────────────────────────────────
+// `parent` and `children` are wikilinks on disk (CONVENTION §Links) and ids in
+// the app, so this is the seam. Before this existed, createPage never read the
+// parent it was handed and page() never surfaced one, so `meta.parent` was
+// undefined on every page in the vault and the breadcrumb was dead markup.
+
+test("a sub-page is born carrying its parent, as a quoted wikilink", async () => {
+  const d = await fixture();
+  const child = await d.createPage({ kind: "topic", title: "Coptic Stitch",
+                                     parent: "01CCCCCCCCCCCCCCCCCCCCCCCC" });
+  const raw = await d.v.be.readText(child.path);
+  assert.match(raw, /^parent: "\[\[Gamma\]\]"$/m,
+    "the title, quoted — an unquoted [[X]] is a YAML sequence, an id is Obsidian-dead");
+});
+
+test("page() reports parent and children as ids, both directions", async () => {
+  const d = await fixture();
+  const child = await d.createPage({ kind: "topic", title: "Coptic Stitch",
+                                     parent: "01CCCCCCCCCCCCCCCCCCCCCCCC" });
+  assert.equal((await d.page(child.id)).meta.parent, "01CCCCCCCCCCCCCCCCCCCCCCCC");
+  assert.deepEqual((await d.page("01CCCCCCCCCCCCCCCCCCCCCCCC")).meta.children, [child.id]);
+});
+
+test("the parent's list is derived, so it is never a second copy to go stale", async () => {
+  const d = await fixture();
+  const child = await d.createPage({ kind: "topic", title: "Coptic Stitch",
+                                     parent: "01CCCCCCCCCCCCCCCCCCCCCCCC" });
+  const parentRaw = await d.v.be.readText("topics/Gamma.md");
+  assert.doesNotMatch(parentRaw, /^children:/m, "nothing is written on the parent");
+  assert.deepEqual((await d.page("01CCCCCCCCCCCCCCCCCCCCCCCC")).meta.children, [child.id]);
+});
+
+test("a hand-written parent: from Obsidian is read the same way", async () => {
+  const d = await fixture();
+  await d.v.be.writeText("notes/Hand.md", md(P("01FFFFFFFFFFFFFFFFFFFFFFFF",
+    { title: "Hand", parent: "[[Gamma]]" }), "written by hand"));
+  await d.v.buildIndex();
+  assert.equal((await d.page("01FFFFFFFFFFFFFFFFFFFFFFFF")).meta.parent,
+    "01CCCCCCCCCCCCCCCCCCCCCCCC");
+  // …and by alias, which is how a renamed parent keeps its children.
+  await d.v.be.writeText("notes/Hand2.md", md(P("01GGGGGGGGGGGGGGGGGGGGGGGG",
+    { title: "Hand2", parent: "[[Gee]]" }), "by alias"));
+  await d.v.buildIndex();
+  assert.equal((await d.page("01GGGGGGGGGGGGGGGGGGGGGGGG")).meta.parent,
+    "01CCCCCCCCCCCCCCCCCCCCCCCC");
+});
+
+test("renaming a parent leaves the alias that keeps its sub-pages attached", async () => {
+  const d = await fixture();
+  const child = await d.createPage({ kind: "topic", title: "Coptic Stitch",
+                                     parent: "01CCCCCCCCCCCCCCCCCCCCCCCC" });
+  await d.updatePage("01CCCCCCCCCCCCCCCCCCCCCCCC", { title: "Gamma Rays" });
+  await d.v.buildIndex();
+  assert.equal(d.v.index.get("01CCCCCCCCCCCCCCCCCCCCCCCC").path, "topics/Gamma Rays.md");
+  assert.equal((await d.page(child.id)).meta.parent, "01CCCCCCCCCCCCCCCCCCCCCCCC",
+    "a `parent:` is an inbound link the mentions scan cannot see");
+});
+
+test("a parent can be detached, and the key goes with it", async () => {
+  const d = await fixture();
+  const child = await d.createPage({ kind: "topic", title: "Coptic Stitch",
+                                     parent: "01CCCCCCCCCCCCCCCCCCCCCCCC" });
+  await d.updatePage(child.id, { meta: { parent: null } });
+  assert.equal((await d.page(child.id)).meta.parent, undefined);
+  assert.doesNotMatch(await d.v.be.readText(child.path), /^parent:/m);
+});
+
+test("a list row carries its parent, which is what indents the tree", async () => {
+  const d = await fixture();
+  const child = await d.createPage({ kind: "topic", title: "Coptic Stitch",
+                                     parent: "01CCCCCCCCCCCCCCCCCCCCCCCC" });
+  const row = d.pages({ kind: "topic" }).items.find((p) => p.id === child.id);
+  assert.equal(row.meta.parent, "01CCCCCCCCCCCCCCCCCCCCCCCC");
+});
+
+// ── A board is not its back-of-note ─────────────────────────────────────────
+// `page(id)` hands the app a board's BACK OF THE NOTE as the page body, so the
+// shared header and chips row — which save `body` like every other kind — were
+// writing half a file over the whole one. Editing a board's title, or adding a
+// tag to it, silently deleted the drawing.
+
+test("an ordinary save on a board keeps the drawing, byte for byte", async () => {
+  const d = await fixture();
+  const board = await d.createPage({ kind: "drawing", title: "Sketch" });
+  const before = await d.v.be.readText(board.path);
+  assert.match(before, /# Excalidraw Data/);
+  await d.updatePage(board.id, { title: "Sketch renamed", body: board.body, tags: ["x"] });
+  const after = await d.v.be.readText(d.v.index.get(board.id).path);
+  assert.match(after, /# Excalidraw Data/, "the scene survived a title edit");
+  assert.equal(after.split("# Excalidraw Data")[1], before.split("# Excalidraw Data")[1],
+    "and was not re-serialized either — an edit that touched no element rewrites nothing");
+});
+
+test("the back of the note is still writable, above the drawing", async () => {
+  const d = await fixture();
+  const board = await d.createPage({ kind: "drawing", title: "Sketch" });
+  await d.updatePage(board.id, { body: "Why this board exists." });
+  const after = await d.v.be.readText(board.path);
+  assert.match(after, /Why this board exists\./);
+  assert.match(after, /# Excalidraw Data/);
+  assert.equal((await d.page(board.id)).body, "Why this board exists.");
+});

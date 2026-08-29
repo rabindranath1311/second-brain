@@ -18,9 +18,11 @@
 
 import { computeDashboard } from "./dashboard.js";
 import { listImages, filterImages, isImagePath } from "./images.js";
-import { isExcalidrawPath, parseExcalidraw, serializeExcalidraw } from "./excalidraw.js";
+import { isExcalidrawPath, parseExcalidraw, serializeExcalidraw,
+         hasExcalidrawData, withBackOfNote } from "./excalidraw.js";
 import { clipFrontmatter, urlsFromText, findByUrl, titleFromUrl } from "./clip.js";
 import { parse, unescapeUser } from "./mdfile.js";
+import { basenameOf, resolveWikilink } from "./links.js";
 
 const DEFAULT_LIMIT = 200;
 
@@ -158,8 +160,15 @@ export function renamePlan(v, cur, newTitle) {
   if (takenStems(v, cur.path).has(low(newStem))) return null;
 
   const dir = cur.path.slice(0, cur.path.length - name.length);
-  const linked = v.list().some((e) => e.path !== cur.path && (e.mentions || [])
-    .some((m) => low(String(m).replace(PAGE_EXT, "").trim()) === low(oldStem)));
+  /* "Is anything pointing here?" — asked of the body wikilinks AND of the
+     structural ones. `parent:` and `children:` never appear in a body, so the
+     mentions scan cannot see them; without this a renamed parent left every
+     sub-page under it pointing at a name no file answers to any more. */
+  const namesOld = (ref) => low(refTarget(ref).replace(PAGE_EXT, "")) === low(oldStem);
+  const linked = v.list().some((e) => e.path !== cur.path && (
+    (e.mentions || []).some((m) => low(String(m).replace(PAGE_EXT, "").trim()) === low(oldStem))
+    || (e.parent && namesOld(e.parent))
+    || (e.children || []).some(namesOld)));
   return { to: `${dir}${newStem}${name.slice(oldStem.length)}`, alias: linked ? oldStem : null };
 }
 
@@ -195,6 +204,59 @@ export function noteChrome(page = {}) {
   return "article";
 }
 const FOLDER_FOR = { note: "notes", topic: "topics", canvas: "canvas", inspo: "inspo" };
+
+// ── structural references ───────────────────────────────────────────────────
+/* `parent` and `children` are WIKILINKS on disk, not ids — CONVENTION §Links:
+   "Structural references (`parent`, `children`, project membership) are
+   wikilinks too, so they show up in Obsidian's Properties panel and its
+   graph", and "**Never `[[<ULID>]]`**". The app works in ids, so the seam is
+   here: the disk holds a name, these two turn it into an id and back.
+   A rename keeps the link alive the same way every other link survives one —
+   `renamePlan` leaves the old name in `aliases`, and resolution reads aliases. */
+
+/** The name a structural reference points at: `'[[A Page|x]]'` → `'A Page'`. */
+function refTarget(ref) {
+  // An unquoted `parent: [[X]]` — the mistake CONVENTION warns about — parses
+  // as a one-item flow sequence. Read it rather than write a dead relation.
+  const raw = String(Array.isArray(ref) ? ref[0] ?? "" : ref ?? "").trim();
+  if (!raw) return "";
+  const m = /^!?\[+([^\]]+)\]+$/.exec(raw);
+  return (m ? m[1] : raw).split("|")[0].split("#")[0].trim();
+}
+
+/** `'[[Some Page]]'` (however it was quoted) → the id it names, or null. */
+function refToId(v, ref) {
+  const target = refTarget(ref);
+  if (!target) return null;
+  // A vault written by an older build of this app stored the id. It is not a
+  // form we ever write again, but it is a relation somebody has on disk.
+  if (v.index.has(target)) return target;
+  const hit = resolveWikilink(target, v.list());
+  return hit ? hit.id : null;
+}
+
+/** An id → the wikilink to write for it. Basename, because that is what
+ *  Obsidian resolves first and the one form guaranteed to be on disk. */
+function idToRef(v, id) {
+  const e = id ? v.index.get(id) : null;
+  return e ? `[[${basenameOf(e.path)}]]` : null;
+}
+
+/** Sub-pages of `id`: the pages that name it as their parent, plus anything an
+ *  explicit `children:` list adds. The child's `parent` is the truth — a
+ *  second copy of the same fact on the parent is the pair that goes stale. */
+function childIdsOf(v, id, entry) {
+  const out = [];
+  for (const e of v.list()) {
+    if (e.id === id || !e.parent) continue;
+    if (refToId(v, e.parent) === id) out.push(e.id);
+  }
+  for (const ref of (entry && entry.children) || []) {
+    const cid = refToId(v, ref);
+    if (cid && cid !== id && !out.includes(cid)) out.push(cid);
+  }
+  return out;
+}
 
 /* `note` is the fallback bucket: inferKind sends anything it cannot place
    there, and scaffold stamps the root contract docs `kind: note`. Left
@@ -380,7 +442,18 @@ export class Data {
     const sorted = items.sort((a, b) =>
       String(b.updated || "").localeCompare(String(a.updated || "")));
     const sliced = sorted.slice(0, Math.max(0, limit));
-    return { items: sliced.map((e) => pageOut(e)), count: sliced.length };
+    const rows = sliced.map((e) => pageOut(e));
+    /* The tree-aware list indents a page under its parent, and read it from
+       `meta.parent` — which nothing on a list row has ever carried, so every
+       list has been flat whatever the files said. Only the rows that claim a
+       parent pay for a resolve; `resolveWikilink` walks the vault, and doing
+       that once per row would be a full scan per page listed. */
+    sliced.forEach((e, i) => {
+      if (!e.parent) return;
+      const pid = refToId(this.v, e.parent);
+      if (pid) rows[i].meta = { ...rows[i].meta, parent: pid };
+    });
+    return { items: rows, count: rows.length };
   }
 
   /** Task 6.5's second action: stream bodies from disk so memory stays flat. */
@@ -427,6 +500,19 @@ export class Data {
         ? fm.links.map((u, i) => ({ url: u, og: i === 0 ? og : null }))
         : [{ url: fm.url, og }];
       out.meta = { ...out.meta, url: fm.url, og, links };
+    }
+    /* The sub-page relation. The app reads `meta.parent` / `meta.children` as
+       ids and the file holds wikilinks, so the translation happens here — the
+       same shape the breadcrumb and the PARENT card have always asked for and
+       never once been given: nothing wrote these keys and nothing read them
+       back, so `page.meta.parent` was undefined on every page in the vault and
+       both were dead markup. */
+    const parentId = refToId(this.v, p.parent ?? fm.parent);
+    const children = childIdsOf(this.v, p.id, p);
+    if (parentId || children.length) {
+      out.meta = { ...out.meta,
+        ...(parentId ? { parent: parentId } : {}),
+        ...(children.length ? { children } : {}) };
     }
     return out;
   }
@@ -756,6 +842,12 @@ export class Data {
     // throws on anything else, so an unfiltered passthrough would turn a stray
     // field from a web page into a refused write.
     const clipFm = clipFrontmatter(body.frontmatter || {});
+    /* A sub-page is born knowing its parent, or it is not a sub-page. This
+       used to arrive as `body.meta.parent` and go nowhere at all — createPage
+       builds its frontmatter from a fixed list and never read `meta` — so
+       every "Add sub-page" wrote an ordinary unattached page. */
+    const parentRef = idToRef(this.v, body.parent
+      ?? (body.meta && body.meta.parent) ?? null);
     // A new drawing's body is the plugin block with a blank scene — the
     // frontmatter half is the vault's to write, so it is stripped off here.
     const pageBody = isDrawing
@@ -765,7 +857,8 @@ export class Data {
       path: `${folder}/${finalStem}${ext}`,
       kind, title,
       frontmatter: { kind, title, tags: body.tags || [],
-                     ...(aliases.length && { aliases }), ...extraFm, ...clipFm },
+                     ...(aliases.length && { aliases }), ...extraFm, ...clipFm,
+                     ...(parentRef ? { parent: parentRef } : {}) },
       body: pageBody,
     });
     if (!r.ok) return r;
@@ -807,6 +900,14 @@ export class Data {
         else delete fm.links;
         if (!("url" in patch)) fm.url = urls[0] ?? fm.url ?? "";
       }
+      /* The sub-page relation, written as the wikilink CONVENTION asks for.
+         `children` is deliberately NOT written: the child names its parent and
+         the parent's list is derived from that one fact, so there is no second
+         copy to fall out of step with the first. */
+      if ("parent" in patch.meta) {
+        const ref = idToRef(this.v, patch.meta.parent);
+        if (ref) fm.parent = ref; else delete fm.parent;
+      }
     }
     // Decided before the write, so the alias that keeps inbound links alive
     // goes to disk in the same save as the new title.
@@ -815,9 +916,21 @@ export class Data {
       const had = Array.isArray(fm.aliases) ? fm.aliases : fm.aliases ? [fm.aliases] : [];
       fm.aliases = [...new Set([...had, plan.alias])];
     }
+    /* A board's body, as `page(id)` reports it, is the BACK OF THE NOTE — the
+       prose above the drawing, not the file. So every editor on that screen
+       except the board itself is holding half a file and does not know it, and
+       the ordinary save path wrote that half over the whole: touch a tag or a
+       link chip on a board and the `## Drawing` block went with it. The scene
+       is spliced back rather than re-serialized, so a save that never touched
+       an element does not rewrite the compressed payload either. */
+    let nextBody = "body" in patch ? patch.body : cur.body;
+    if ("body" in patch && isExcalidrawPath(cur.path)
+        && !hasExcalidrawData(patch.body) && hasExcalidrawData(cur.body)) {
+      nextBody = withBackOfNote(cur.body, patch.body);
+    }
     const r = await this.v.put({
       id, path: cur.path, frontmatter: fm,
-      body: "body" in patch ? patch.body : cur.body,
+      body: nextBody,
       force: patch.force,
     });
     if (!r.ok) return r;

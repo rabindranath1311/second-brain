@@ -9,7 +9,7 @@
 //   * CACHE_VERSION versions the *cache itself*. `activate` deletes every cache
 //     that is not the current one, so caches.keys() is always exactly 1 and no
 //     deploy leaves orphans. Bump it when this file changes.
-const CACHE_VERSION = "v224";
+const CACHE_VERSION = "v225";
 const CACHE = `canon-vault-${CACHE_VERSION}`;
 
 const SHELL = [

@@ -112,3 +112,100 @@ export function findWikilinks(text) {
   }
   return out;
 }
+
+/* ── Mentions, as text ──────────────────────────────────────────────────────
+ * A mention is not a stored field: `buildIndex` derives `entry.mentions` from
+ * the `[[...]]` in the body on every rebuild. So adding or removing one means
+ * editing the text, and these are that edit. Here rather than in `app.js`
+ * because wikilink handling is one subject and this is the half of it that
+ * writes — and because everything under `vault/` is testable in Node.
+ *
+ * Two rules from CONVENTION that these enforce and callers must not re-derive:
+ * the link carries the TITLE ("**Never `[[<ULID>]]`**" — Obsidian looks for a
+ * file by that name), and it goes in the body, never in a `## Mentions`
+ * section: `Vault.put` escapes the five structural headings out of a body it
+ * treats as user prose, so writing one there puts `\## Mentions` on disk.
+ */
+
+/** True of a line that is nothing but wikilinks — bookkeeping, not a sentence. */
+export function isLinkOnlyLine(line) {
+  const t = String(line);
+  return t.trim() !== "" && t.replace(/!?\[\[[^\]\n]+\]\]/g, "").trim() === "";
+}
+
+/** The name as it may sit between brackets. `[`, `]` and `|` would end the link
+ *  early or turn the rest into a display alias nobody asked for. */
+export function mentionName(name) {
+  return String(name == null ? "" : name).replace(/[\[\]|]/g, "").trim();
+}
+
+/**
+ * `body` with `[[name]]` in it.
+ *
+ * Unchanged if the page already links there — a second copy at the foot of the
+ * page says nothing the first one did not.
+ */
+export function withMention(body, name) {
+  const src = String(body == null ? "" : body);
+  const wanted = mentionName(name);
+  if (!wanted) return src;
+  const already = findWikilinks(src)
+    .some((w) => w.target.trim().toLowerCase() === wanted.toLowerCase());
+  if (already) return src;
+  const link = `[[${wanted}]]`;
+  const trimmed = src.replace(/\s+$/, "");
+  if (!trimmed) return link;
+  const lines = trimmed.split("\n");
+  // Join the trailing run of bare links rather than opening a paragraph for
+  // each one, or five links become five paragraphs.
+  const last = lines[lines.length - 1];
+  if (isLinkOnlyLine(last)) {
+    lines[lines.length - 1] = `${last.trimEnd()} ${link}`;
+    return lines.join("\n");
+  }
+  return `${trimmed}\n\n${link}`;
+}
+
+/**
+ * `body` with the link to `name` taken out.
+ *
+ * Two removals, because there are two kinds of link. One sitting on a line of
+ * its own is bookkeeping and simply goes. One inside a sentence is a WORD, and
+ * deleting it would edit the user's prose — so it is unlinked and the word
+ * stays, which is what "unlink" means everywhere else. Embeds (`![[x]]`) are
+ * not mentions and are left alone, and so is anything inside code: Obsidian
+ * does not linkify there either.
+ */
+export function withoutMention(body, name) {
+  const src = String(body == null ? "" : body);
+  const wanted = mentionName(name).toLowerCase();
+  if (!wanted) return src;
+  const srcLines = src.split("\n");
+  const maskLines = maskCode(src).split("\n");     // same line count, by contract
+  const kept = [];
+  for (let i = 0; i < srcLines.length; i++) {
+    const line = srcLines[i];
+    if (!maskLines[i].includes("[[")) { kept.push(line); continue; }
+    const bare = isLinkOnlyLine(maskLines[i]);
+    let touched = false;
+    let next = line.replace(/(!?)\[\[([^\]\n]+?)\]\]/g, (raw, bang, inner) => {
+      const target = inner.split("|")[0].split("#")[0].trim().toLowerCase();
+      if (bang || target !== wanted) return raw;
+      touched = true;
+      if (bare) return "";
+      const [head, display] = inner.split("|");
+      return (display || head.split("#")[0]).trim();
+    });
+    if (!touched) { kept.push(line); continue; }
+    next = bare ? next.replace(/\s{2,}/g, " ").trim()
+                : next.replace(/[ \t]{2,}/g, " ").trimEnd();
+    if (bare && next === "") {
+      // That line held only this link. Take the blank line that was holding it
+      // apart from the prose above with it, or the page grows a gap per unlink.
+      while (kept.length && kept[kept.length - 1].trim() === "") kept.pop();
+      continue;
+    }
+    kept.push(next);
+  }
+  return kept.join("\n").replace(/\s+$/, "");
+}

@@ -204,6 +204,31 @@ export function textOfExcalidraw(text) {
  * with `scene: null` and a populated `error` rather than throwing: the caller
  * must be able to show "this drawing is unreadable" without losing the file.
  */
+/**
+ * True when `body` (a file body, frontmatter already off) carries the plugin's
+ * data block — i.e. it is the WHOLE drawing file and not just the prose above
+ * it. `page(id)` hands the app `backOfNote` as the page's body, so anything
+ * that saves "the body" of a board is holding half a file and does not know it.
+ */
+export function hasExcalidrawData(body) {
+  return RE_DATA_BLOCK.test(String(body == null ? "" : body));
+}
+
+/**
+ * Put `back` above the drawing and leave the drawing's own bytes alone.
+ *
+ * The scene is not re-serialized here on purpose: re-encoding it to change the
+ * prose above it would rewrite the compressed payload and the generated
+ * sections for an edit that never touched a single element.
+ */
+export function withBackOfNote(body, back) {
+  const src = String(body == null ? "" : body);
+  const at = src.search(RE_DATA_BLOCK);
+  if (at < 0) return String(back || "");
+  const text = String(back || "").trim();
+  return (text ? `${text}\n\n` : "\n") + src.slice(at).replace(/^\n+/, "");
+}
+
 export function parseExcalidraw(text) {
   const src = String(text == null ? "" : text);
   const out = {

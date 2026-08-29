@@ -3,7 +3,8 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveWikilink, parseWikilink, findWikilinks, basenameOf, isEmbeddableFile } from "../vault/links.js";
+import { resolveWikilink, parseWikilink, findWikilinks, basenameOf, isEmbeddableFile,
+         withMention, withoutMention, mentionName, isLinkOnlyLine } from "../vault/links.js";
 
 const ENTRIES = [
   { id: "01A", path: "notes/Lantern Notes.md",      title: "Lantern Notes",   aliases: [] },
@@ -123,4 +124,73 @@ test("the shipped CONVENTION.md has no wikilinks outside code except index and l
     [...new Set(findWikilinks(CONVENTION_MD).map((l) => l.target))].sort(),
     ["index", "log"],
   );
+});
+
+// ── Mentions, as text ───────────────────────────────────────────────────────
+// `entry.mentions` is derived from the body, so adding a link means writing one
+// into the body. "Link a page" pushed onto the in-memory array instead, and the
+// chip was gone by the next load. These are the transforms that fix that.
+
+test("a mention goes into the body as a title, never as an id", () => {
+  assert.equal(withMention("Prose.", "Quire Structures"), "Prose.\n\n[[Quire Structures]]");
+  // CONVENTION: "Never [[<ULID>]]" — whatever is passed is written verbatim, so
+  // the caller must pass the title. The picker's row label is the title.
+  assert.equal(withMention("", "Alpha"), "[[Alpha]]");
+});
+
+test("brackets and pipes cannot end the link early", () => {
+  assert.equal(mentionName(" A [weird] name|x "), "A weird namex");
+  assert.equal(withMention("x", "A [B] C"), "x\n\n[[A B C]]");
+});
+
+test("a page already linked in the prose is not linked again", () => {
+  const body = "See [[Alpha]] for the rest.";
+  assert.equal(withMention(body, "Alpha"), body);
+  assert.equal(withMention(body, "alpha"), body, "resolution is case-insensitive");
+});
+
+test("consecutive links join one trailing line instead of one paragraph each", () => {
+  let b = withMention("Prose.", "Alpha");
+  b = withMention(b, "Beta");
+  b = withMention(b, "Gamma");
+  assert.equal(b, "Prose.\n\n[[Alpha]] [[Beta]] [[Gamma]]");
+});
+
+test("a link inside a sentence is unlinked, not deleted — the word stays", () => {
+  assert.equal(withoutMention("Built on [[Alpha]] for now.", "Alpha"), "Built on Alpha for now.");
+  assert.equal(withoutMention("Built on [[Alpha|the first]].", "Alpha"), "Built on the first.");
+});
+
+test("a link on a line of its own goes, and takes its blank line with it", () => {
+  assert.equal(withoutMention("Prose.\n\n[[Alpha]]", "Alpha"), "Prose.");
+  assert.equal(withoutMention("Prose.\n\n[[Alpha]] [[Beta]]", "Alpha"), "Prose.\n\n[[Beta]]");
+});
+
+test("an embed is not a mention and is left alone", () => {
+  const body = "![[mood.png]]\n\n[[Alpha]]";
+  assert.equal(withoutMention(body, "mood.png"), body);
+});
+
+test("a link inside code is not touched, because Obsidian does not linkify it", () => {
+  const body = "```\n[[Alpha]]\n```\n\n[[Alpha]]";
+  assert.equal(withoutMention(body, "Alpha"), "```\n[[Alpha]]\n```");
+  assert.equal(withMention("`[[Alpha]]`", "Alpha"), "`[[Alpha]]`\n\n[[Alpha]]",
+    "a link that only exists in code does not count as already linked");
+});
+
+test("removing a mention the body does not carry changes nothing", () => {
+  assert.equal(withoutMention("Prose.", "Alpha"), "Prose.");
+});
+
+test("a links-only line is bookkeeping; a sentence is not", () => {
+  assert.equal(isLinkOnlyLine("[[A]] [[B]]"), true);
+  assert.equal(isLinkOnlyLine("see [[A]]"), false);
+  assert.equal(isLinkOnlyLine(""), false);
+});
+
+test("add then remove leaves the body as it was", () => {
+  for (const body of ["Prose.", "", "# Head\n\nA line.\n", "Only [[Beta]] here."]) {
+    const round = withoutMention(withMention(body, "Alpha"), "Alpha");
+    assert.equal(round, body.replace(/\s+$/, ""), JSON.stringify(body));
+  }
 });

@@ -758,6 +758,19 @@ function resolveMention(mn) {
   return { label: stem, id: hit ? hit[0] : null, kind: hit ? hit[1].kind : null };
 }
 
+/* ── A mention is a wikilink in the body ────────────────────────────────────
+   `page.mentions` is not a stored field. `buildIndex` derives it from the
+   `[[...]]` in the text on every rebuild, so a link pushed onto that array and
+   nowhere else was gone by the next load — which is precisely what "Link a
+   page" did: it drew a chip, and the file never heard about it.
+
+   The text transforms live in `vault/links.js` beside the rest of wikilink
+   handling, where they are testable in Node and mirrored into the clipper. */
+
+/** The links module. Read through a call rather than captured at module load:
+ *  `bridge.js` publishes it on `window` and the order there is its business. */
+const _links = () => window.SB_LINKS;
+
 /* A mention chip: the same pill as a tag, wearing its target's kind instead
    of a hue. The two were different shapes in different fonts — a mono box
    with a permanent × beside a sans pill — which made one row of links read
@@ -3134,6 +3147,37 @@ function V2PageView(pageId, onChange, onDeleted) {
       });
   };
 
+  /* Linking a page writes the wikilink into the BODY — `links.withMention`
+     says why that is the only place it can go. `page.mentions` is updated beside it
+     so the chip appears on the spot; on the next load the array is derived
+     from the very text just written, which is the whole point of writing it. */
+  const linkMention = (name) => {
+    const wanted = _links().mentionName(name);
+    if (!wanted) return;
+    const next = _links().withMention(page.body, wanted);
+    const known = (page.mentions || []).some((m) =>
+      String(m).trim().toLowerCase() === wanted.toLowerCase());
+    if (next === page.body && known) return;      // already linked, and shown
+    page.body = next;
+    if (!known) { page.mentions = page.mentions || []; page.mentions.push(wanted); }
+    queueSave(); layout();
+  };
+
+  /* A stored mention can be a title, a path or — from an older build of the
+     picker — an id, and the body holds none of those three but the name. Try
+     each form and stop at the one the text actually answers to. */
+  const unlinkMention = (mn, i) => {
+    const stem = String(mn || '').split('/').pop().replace(/\.(md|canvas)$/i, '');
+    let next = page.body;
+    for (const cand of [String(mn || ''), stem, resolveMention(mn).label]) {
+      const tried = _links().withoutMention(next, cand);
+      if (tried !== next) { next = tried; break; }
+    }
+    page.body = next;
+    page.mentions.splice(i, 1);
+    queueSave(); layout();
+  };
+
   const runBodyTeardowns = () => {
     bodyTeardowns.forEach((fn) => { try { fn(); } catch (_) {} });
     bodyTeardowns = [];
@@ -3226,9 +3270,13 @@ function V2PageView(pageId, onChange, onDeleted) {
     dirty = false;
     inFlight++;
     try {
+      /* No `mentions` here. It is not a field anything writes: the index
+         derives it from the body's wikilinks on every rebuild, so sending it
+         asks the vault to store something it has no way to store — and
+         `updatePage` has always dropped it on the floor. The body carries it. */
       const patched = await savePage({
         title: page.title, body: page.body, tags: page.tags,
-        mentions: page.mentions, kind: page.kind, slug: page.slug,
+        kind: page.kind, slug: page.slug,
         meta: page.meta,
       });
       if (!patched) return;                 // refused; savePage() set the state
@@ -5405,7 +5453,6 @@ function V2PageView(pageId, onChange, onDeleted) {
     async function createSubpage() {
       try {
         if (!page.meta) page.meta = {};
-        if (!Array.isArray(page.meta.children)) page.meta.children = [];
         // Enforce 3-level cap: if THIS page already has a grandparent, it sits
         // at depth 2; creating a child would push us to depth 3 (level 4) which
         // is too deep.
@@ -5415,14 +5462,27 @@ function V2PageView(pageId, onChange, onDeleted) {
             + 'link to a page instead of nesting another one.');
           return;
         }
+        /* `parent`, at the top level, is what createPage reads — it builds its
+           frontmatter from a fixed list and has never once looked inside
+           `meta`, so the relation this button exists to make was dropped on
+           the floor and every sub-page came out an ordinary unattached page.
+           (`kind: 'markdown'` went with it: there are four kinds and that is
+           not one of them, so that branch could only ever return a refusal the
+           next line then read `.id` off.) */
         const newPage = await SB.data().createPage({
-          kind: page.kind === 'markdown' ? 'markdown' : 'topic',
-          title: '', body: '',
-          meta: { parent: page.id }
+          kind: 'topic', title: '', body: '', parent: page.id,
         });
-        page.meta.children.push(newPage.id);
-        await SB.data().updatePage(page.id, { meta: page.meta });
+        if (!newPage || newPage.ok === false || !newPage.id) {
+          toast('Could not create the sub-page — ' + ((newPage
+            && (newPage.message || newPage.reason)) || 'the vault refused the write'),
+            { tone: 'error' });
+          return;
+        }
+        /* Nothing to write back on this end. The child names its parent and
+           the parent's list is derived from that one fact — a second copy here
+           is the half of the pair that goes stale. */
         cacheInvalidatePage(page.id);
+        invalidatePageIndex();
         app.openPageId = newPage.id; app.route = 'page'; render();
       } catch (e) { toast('Could not create the sub-page — ' + e.message, { tone: 'error' }); }
     }
@@ -5553,15 +5613,24 @@ function V2PageView(pageId, onChange, onDeleted) {
         // so nothing is dropped from the file.
         visibleMentions().map(({ mn, i }) => MentionChip(mn, {
           onClick: () => { const t = resolveMention(mn); if (t.id) openPage(t.id); },
-          onRemove: () => { page.mentions.splice(i, 1); queueSave(); layout(); },
+          /* Splicing the array was the whole of it, and the array is rebuilt
+             from the body on the next load — so the chip came back. The link
+             lives in the text, so that is where it is taken out of. */
+          onRemove: () => { unlinkMention(mn, i); },
         })),
         // Same panel, same keys, pages instead of tags.
-        chipAdd('link-2', 'Link a page', (btn) => openPicker(btn, {
-          placeholder: 'Find a page…',
-          hint: '↑↓ to choose · ⏎ to link · esc to close',
-          search: pageRows(page.mentions),
-          onPick: (row) => { page.mentions.push(row.id); queueSave(); layout(); },
-        })),
+        /* Not on a wall. An inspo body is a list of items and `serializeInspoBody`
+           keeps items only — a page-level link written there survives until the
+           next time the wall is edited and is then dropped, silently. A surface
+           that cannot save the gesture does not accept it; a wall still cites a
+           page the way its own model does, with a wikilink in a caption or note. */
+        page.kind === 'inspo' ? null
+          : chipAdd('link-2', 'Link a page', (btn) => openPicker(btn, {
+            placeholder: 'Find a page…',
+            hint: '↑↓ to choose · ⏎ to link · esc to close',
+            search: pageRows(page.mentions),
+            onPick: (row) => { linkMention(row.label); },
+          })),
         /* An "in content" strip used to list every #hashtag found in the
            body. It restated information the reader can already see — the
            tags are right there in the prose, styled as tags — and on an
