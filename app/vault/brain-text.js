@@ -50,9 +50,9 @@ aliases: [Quiet Dashboards]
 \`id\`, \`kind\`, \`title\`, \`created\`, \`updated\` are **required**. \`id\` is a ULID and
 never changes — it is the page's identity, which is why filenames are free to.
 
-Optional, by content rather than by kind: \`url\`, \`og_title\`, \`og_description\`,
-\`og_image\`, \`og_site_name\`, \`author\`, \`captured\`, \`source\`, \`status\`,
-\`start_date\`, \`parent\`, \`children\`.
+Optional, by content rather than by kind: \`url\`, \`links\`, \`og_title\`,
+\`og_description\`, \`og_image\`, \`og_site_name\`, \`author\`, \`captured\`, \`source\`,
+\`status\`, \`start_date\`, \`parent\`, \`children\`.
 
 **Timestamps keep the \`+00:00\` form, unquoted.** Obsidian renders them as dates
 that way. Do not let a YAML library rewrite them to \`Z\` or to a date object.
@@ -76,6 +76,28 @@ its member pages.
 How a \`note\` renders is decided by its frontmatter, not by a subtype: \`url\` +
 \`og_image\` → bookmark card; \`url\` alone → link with a source line; a body that is
 a single blockquote → pull-quote; otherwise an article.
+
+### \`url\`, \`links\` and the og_* group
+
+A note that saves an address carries \`url\`. A note that saves several also
+carries \`links\`, a list — and **\`links[0]\` is \`url\`**, written twice so a
+reader that knows only \`url\` still gets the primary one. One link is \`url\`
+alone; \`links\` with a single entry is redundant and is not written.
+
+**\`url: ""\` — present and empty — is a bookmark with no link in it yet.** It is
+how a new one is born and what is left when every link is removed, and it is
+the one empty value the format keeps rather than dropping. It means *zero*
+links, never one blank one, and it is still a bookmark: it is filed and counted
+as one, and it opens with a link field rather than a prose editor.
+
+**The og_\\* keys describe \`url\` and nothing else.** They are one OpenGraph read
+of one address — the clipper writes them flat because that is the shape
+Obsidian and every other reader can already see. Flat means unkeyed, so they
+are bound to \`url\` by *value*: a client attaching them to whatever sits first
+in \`links\` will hand one page's image and title to another. **When \`url\`
+changes to a different address, the og_\\* keys go with it** — they describe
+something the file no longer points at. \`author\`, \`captured\` and \`source\` are
+not part of that group and stay.
 
 ## Filenames
 

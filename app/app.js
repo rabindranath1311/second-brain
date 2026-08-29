@@ -1258,8 +1258,12 @@ function metaForPage(p) {
      it under meta, an index entry from `pages()` carries it hoisted — and
      `data.js` derives the whole bookmark facet from the hoisted one. Reading
      only meta.url meant every bookmark in every list was still a "Note". */
+  /* And `!= null` rather than truthy, the same test `noteChrome` and the
+     bookmark facet make: a note whose url is the empty string is a bookmark
+     with no link in it yet, and it wore a "Note" pill in the very list that
+     had filed it under Bookmark. */
   const url = p && (p.url != null ? p.url : (p.meta && p.meta.url));
-  if (p && p.kind === 'note' && url) return KIND_META.bookmark;
+  if (p && p.kind === 'note' && url != null) return KIND_META.bookmark;
   return KIND_META[p && p.kind] || KIND_META.note;
 }
 // "by kind" capture types.
@@ -4900,7 +4904,14 @@ function V2PageView(pageId, onChange, onDeleted) {
         const at = page.meta.links.indexOf(link);
         if (at >= 0) page.meta.links.splice(at, 1);
       } else {
-        link.url = withScheme(v);
+        const next = withScheme(v);
+        /* The og was read off the page at the OLD address, so a retyped url
+           leaves a preview card describing something this row no longer
+           points at. `updatePage` drops the og_* keys for the same reason on
+           save; doing it here too means the card goes the moment the address
+           does, instead of surviving on screen until the next reload. */
+        if (next !== link.url) link.og = null;
+        link.url = next;
       }
       editing = null;
       syncLegacy(); queueSave(); renderLinks();

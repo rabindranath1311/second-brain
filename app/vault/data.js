@@ -570,16 +570,38 @@ export class Data {
     // Bookmark chrome reads meta.url / meta.links / meta.og; they live in the
     // frontmatter (the clipper writes og_* keys) and must be surfaced or the
     // editor opens empty however much the file carries.
+    //
+    // This is the exact inverse of the `patch.meta.links` branch in
+    // `updatePage`, and the two are read together or not at all. What that
+    // one writes:
+    //   - the link list is `links` when there is more than one, and `url`
+    //     alone when there is one — `url` is always `links[0]`;
+    //   - **no links at all is `url: ""`** with no `links` key. That is a
+    //     bookmark in progress, the same state a new one is born in, and it
+    //     means ZERO rows — not one blank one. Reading `""` as a link is what
+    //     put a phantom row and a "Links · 1" back in front of a user who had
+    //     just deleted every link, and it was self-perpetuating: the next save
+    //     filtered the blank out and wrote `url: ""` again.
+    //   - the og_* keys describe `url` and are dropped when `url` changes.
     const fm = p.frontmatter || {};
     if (fm.url != null) {
-      const og = fm.og_image ? {
+      // An og with no url to hang on is not a preview of anything — and
+      // `noteChrome` already says `url: ""` is a link line, never a card.
+      const og = fm.url && fm.og_image ? {
         url: fm.url, image: fm.og_image,
         title: fm.og_title || null, description: fm.og_description || null,
         site_name: fm.og_site_name || null,
       } : null;
-      const links = Array.isArray(fm.links) && fm.links.length
-        ? fm.links.map((u, i) => ({ url: u, og: i === 0 ? og : null }))
-        : [{ url: fm.url, og }];
+      const urls = Array.isArray(fm.links) && fm.links.length
+        ? fm.links.map((u) => String(u))
+        : (fm.url ? [String(fm.url)] : []);
+      /* BY VALUE, never by position. The og payload is a property of one
+         URL — the clipper reads it off the page it captured — but the format
+         stores it flat beside `url`, so the only honest way to reattach it is
+         to match the address it was captured from. Handing it to whatever
+         sits at index 0 meant deleting the first of two links left the
+         survivor wearing the deleted page's image, title and site name. */
+      const links = urls.map((u) => ({ url: u, og: og && u === fm.url ? og : null }));
       out.meta = { ...out.meta, url: fm.url, og, links };
     }
     /* The sub-page relation. The app reads `meta.parent` / `meta.children` as
@@ -993,21 +1015,30 @@ export class Data {
     const cur = await this.v.get(id);
     if (!cur) return { ok: false, reason: "unknown-id" };
     const fm = { ...(cur.frontmatter || {}) };
+    const urlWas = fm.url;
     for (const k of ["title", "tags", "aliases", "url", "status"]) {
       if (k in patch) fm[k] = patch[k];
     }
     // The editor sends the whole page.meta on every save; the url and the link
     // list are the parts that persist, into frontmatter Obsidian can read.
-    // (og_* keys are the clipper's — the app surfaces them but never writes
-    // them.) Dropping patch.meta silently was why a bookmark edited in the app
-    // reverted on reload.
+    // (og_* keys are the clipper's — the app surfaces them and never authors
+    // them; the one thing it does is CLEAR them, below, when the url they
+    // describe is gone.) Dropping patch.meta silently was why a bookmark
+    // edited in the app reverted on reload.
     if (patch.meta && typeof patch.meta === "object") {
       if ("url" in patch.meta && !("url" in patch)) fm.url = patch.meta.url ?? "";
       if (Array.isArray(patch.meta.links)) {
         const urls = patch.meta.links.map((l) => l && l.url).filter(Boolean);
         if (urls.length > 1) fm.links = urls;
         else delete fm.links;
-        if (!("url" in patch)) fm.url = urls[0] ?? fm.url ?? "";
+        /* The list is authoritative whenever it is sent, INCLUDING when it is
+           empty. An empty one means the user removed every link, and the shape
+           for that on disk is `url: ""` — mdfile keeps that key precisely
+           because its presence is what says "bookmark in progress" — not the
+           url the page happened to be carrying before. Falling back to
+           `fm.url` left the deleted address in the file for `page()` to hand
+           straight back. */
+        if (!("url" in patch)) fm.url = urls[0] ?? "";
       }
       /* The sub-page relation, written as the wikilink CONVENTION asks for.
          `children` is deliberately NOT written: the child names its parent and
@@ -1017,6 +1048,16 @@ export class Data {
         const ref = idToRef(this.v, patch.meta.parent);
         if (ref) fm.parent = ref; else delete fm.parent;
       }
+    }
+    /* An og is a property of ONE address: the clipper reads it off the page it
+       captured and writes it flat beside `url`. So the moment `url` becomes a
+       different address — edited in place, or the link it named was deleted
+       and another moved up — the og describes nothing in this file and must
+       go, or the survivor inherits a stranger's image, title and site name.
+       Only the og_* group: `author`, `captured` and `source` are the
+       convention's own fields and may well be the user's own words. */
+    if (fm.url !== urlWas) {
+      for (const k of ["og_title", "og_description", "og_image", "og_site_name"]) delete fm[k];
     }
     // Decided before the write, so the alias that keeps inbound links alive
     // goes to disk in the same save as the new title.

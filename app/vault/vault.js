@@ -656,7 +656,13 @@ export class Vault {
         sceneText: isExcalidraw ? textOfExcalidraw(body) : "",
         // Indexed so "bookmarks" can be a list without opening every note:
         // a bookmark IS a note with a url, and the list must know which ones.
-        url: fm.url || null,
+        //
+        // `??`, not `||`: the PRESENCE of the key is the fact, which is why
+        // every reader downstream asks `url != null`. Hoisting `url: ""` to
+        // null flattened that distinction and dropped the one page that needs
+        // it most — a bookmark with no link yet — out of the Bookmark list and
+        // count while the page itself still opened with bookmark chrome.
+        url: fm.url ?? null,
         /* Structural references, kept RAW — CONVENTION writes them as quoted
            wikilinks (`parent: "[[X]]"`) and resolving one needs the whole
            index, which does not exist yet halfway through the walk. `data.js`
