@@ -218,10 +218,11 @@ half of the inconsistency — 8/9/10/12/14/16/18 all appeared, so nothing lined 
 across components and the interface felt tight without being usefully dense.
 Everything structural lands on this scale.
 
-Six regions had each invented their own version of "a small label beside a
-value" — the metadata rail, about-me fields, settings rows, project meta, aside
-blocks, the tweaks panel. They share one grid now (`.side-row` and friends:
-84px label column, baseline-aligned).
+Five regions had each invented their own version of "a small label beside a
+value" — the metadata rail, settings rows, project meta, aside blocks, the
+tweaks panel. They share one grid now (`.side-row` and friends: 84px label
+column, baseline-aligned). About me was the sixth until its fields were
+removed; see *About me is prose*.
 
 ### Mono is a signal, not a texture
 
@@ -591,6 +592,47 @@ there, untouched and readable in Obsidian.
 - **Progressive disclosure**: an empty project opens the picker, because that is
   the only useful action. A project with pages shows one button, because the
   pages are the point.
+
+## About me is prose
+
+`context/about-me.md` is the file every agent reads before it writes in your
+voice, and the screen is now one prose editor over its body. It used to be a
+form — Identity, Taste, Communication and State over four résumé sections
+(experience, skills, education, highlights) — and none of it had ever once
+worked in either direction. The screen sent eight structured keys through
+`updateAboutMe` → `updatePage`, whose write list is title, tags, aliases, url,
+status, two `meta` keys and the body; the rest were dropped in transit and the
+save reported success. `Data.aboutMe()` returns `{ body, updated, path }`, so
+every load re-created the objects empty and the form came back blank whatever
+you had typed into it.
+
+Making it work was the other option, and CONVENTION.md decides against it
+twice. Frontmatter cannot take it: the key list is closed, `mdfile.serialize`
+throws on anything outside it, and YAML there holds neither a nested object nor
+a list of dicts. The body could — but only by claiming `## Experience` and its
+siblings as structural headings the app parses back and regenerates on every
+write, and this is the one file Obsidian and your agent write freely, in
+whatever shape the sentence wants. Rewriting it from a form would drop what
+they had put there: the loss the inspo wall already documents and write safety
+already forbids.
+
+So the fields are gone, along with ~110 lines of CSS for them, and the page is
+what the scaffold template and `SETUP-PROMPT.md` always described — who you
+are, in your own words. Two things came back with the change. The screen shows
+the same three-state save strip the page editor does, because a silent autosave
+is a lie the moment a write is refused. And a vault adopted without the file
+gets an explanation instead of an editor: **a surface that cannot write must
+not accept the gesture**, so `aboutMe()` returns `path: null` and the screen
+reads it.
+
+The bug class is closed at the data layer, not just at this call site.
+`updatePage` now refuses a patch key it cannot write — `{ ok: false, reason:
+"unwritable-fields", fields }` — where it used to drop one silently. Two lists
+decide: what reaches disk, and what a caller may legitimately send for this
+layer to ignore (`mentions` is recomputed from the body's wikilinks, `kind`
+belongs to the frontmatter and the path, `slug` is display). A refusal is
+visible in the UI; a quiet drop is visible nowhere, and this app had shipped
+that twice.
 
 ## Keyboard
 

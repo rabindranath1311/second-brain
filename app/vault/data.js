@@ -434,6 +434,24 @@ function pageOut(entry, body) {
   };
 }
 
+/* What a page patch may carry.
+
+   Two lists, because "accepted" and "written" are not the same thing.
+   `PATCH_WRITTEN` reaches disk. `PATCH_DERIVED` is what a caller may
+   legitimately send and this layer deliberately ignores: `mentions` are
+   recomputed from the body's wikilinks on every index build, `kind` belongs
+   to the frontmatter and the path, and `slug` is display only. The page
+   editor sends all three on every save.
+
+   Everything else is REFUSED rather than dropped. A patch key that nothing
+   writes is a feature that silently does nothing, and this app has shipped
+   that twice: the project form sent `meta.status` and `start_date`, and the
+   About Me screen sent eight structured keys, for as long as either existed.
+   Both reported success on every save. A refusal is visible in the UI; a
+   quiet drop is visible nowhere. */
+const PATCH_WRITTEN = ["title", "tags", "aliases", "url", "status", "body", "meta", "force"];
+const PATCH_DERIVED = ["mentions", "kind", "slug"];
+
 export class Data {
   constructor(vault, opts = {}) {
     this.v = vault;
@@ -661,9 +679,19 @@ export class Data {
     return computeDashboard(this.v.list(), this.now());
   }
 
+  /* `context/about-me.md` — the file every agent reads before it writes in
+     your voice. Its content is its BODY. Prose is the only shape the
+     convention leaves for it: the frontmatter key list is closed, YAML there
+     cannot hold a nested object or a list of dicts, and the five structural
+     body headings are spoken for.
+
+     `path: null` is the answer for a vault adopted without the file, and it
+     is load-bearing rather than cosmetic — the screen reads it to decide
+     whether to offer an editor at all, because a surface that cannot write
+     must not accept the gesture. */
   async aboutMe() {
     const e = [...this.v.index.values()].find((x) => x.path === "context/about-me.md");
-    if (!e) return { body: "", updated: null };
+    if (!e) return { body: "", updated: null, path: null };
     const p = await this.v.get(e.id);
     return { body: p.body, updated: p.updated, path: e.path };
   }
@@ -819,6 +847,13 @@ export class Data {
     return { html: this.renderMarkdown(md || "") };
   }
 
+  /* About me is prose, so a patch here carries a body.
+
+     It used to carry `identity`, `taste`, `communication`, `state`,
+     `experience`, `skills`, `education` and `highlights` as well.
+     `updatePage` had nowhere to put any of them and dropped all eight, and
+     the screen reported a successful save every time. It now refuses what it
+     cannot write, so a patch like that fails loudly instead. */
   async updateAboutMe(patch = {}) {
     const e = [...this.v.index.values()].find((x) => x.path === "context/about-me.md");
     if (!e) return { ok: false, reason: "no-about-me" };
@@ -923,6 +958,17 @@ export class Data {
   }
 
   async updatePage(id, patch = {}) {
+    // Checked before anything is read: a key with no home on disk is a bug in
+    // the caller, not a fact about this page. Reported the way every other
+    // refusal is, so the editor's "Not saved" strip can name it.
+    const unwritable = Object.keys(patch).filter(
+      (k) => !PATCH_WRITTEN.includes(k) && !PATCH_DERIVED.includes(k));
+    if (unwritable.length) {
+      return {
+        ok: false, reason: "unwritable-fields", fields: unwritable,
+        message: `nothing in the vault format holds: ${unwritable.join(", ")}`,
+      };
+    }
     const cur = await this.v.get(id);
     if (!cur) return { ok: false, reason: "unknown-id" };
     const fm = { ...(cur.frontmatter || {}) };

@@ -1825,41 +1825,12 @@ body.col-resizing * { cursor: col-resize !important; user-select: none !importan
   letter-spacing: var(--track-title);
   color: var(--fg);
 }
-.am-grid {
-  display: grid; grid-template-columns: repeat(2, 1fr);
-  gap: 18px 24px;
-  margin: 4px 0 18px;
-}
-.am-sect {
-  display: flex; flex-direction: column; gap: 8px;
-  padding: 14px 14px 16px;
-  background: var(--paper);
-  border: 1px solid var(--line-soft);
-}
-.am-sect-hd {
-  font-size: var(--fz-micro); font-weight: 600;
-  letter-spacing: var(--track-caps); text-transform: uppercase;
-  color: var(--faint);
-  padding-bottom: 4px;
-  border-bottom: 1px solid var(--line-very-soft);
-}
-.am-field { display: flex; flex-direction: column; gap: 3px; }
+/* `.am-lbl` outlived the screen it was named for: About me is prose now, and
+   its Identity/Taste/Communication/State fields are gone. The attach-a-link
+   form is the one surface still using it — see `.att-link-form` below. */
 .am-lbl {
   font-size: var(--fz-micro); color: var(--muted);
   letter-spacing: var(--track-label);
-}
-.am-input {
-  appearance: none; border: 0;
-  background: transparent;
-  color: var(--fg); font: inherit;
-  font-size: var(--fz-body);
-  padding: 4px 0;
-  border-bottom: 1px dashed var(--line-soft);
-}
-.am-input:focus { outline: none; border-bottom-color: var(--accent); }
-.am-input::placeholder { color: var(--faint); }
-@media (max-width: 1000px) {
-  .am-grid { grid-template-columns: 1fr; }
 }
 
 /* ─── Canvas board ────────────────────────────────────────────────────── */
@@ -3114,25 +3085,6 @@ a.set-dl { display: inline-flex; align-items: center; text-decoration: none; }
 .sb-draft-actions button:hover { color: var(--accent); border-color: var(--accent); }
 .sb-draft-over { color: var(--signal-alert); }
 
-/* ─── About Me extras (resume sections) ──────────────────────────────── */
-.am-list { display: flex; flex-direction: column; gap: 6px; }
-.am-entry {
-  background: var(--bg); border: 1px solid var(--line); border-radius: 2px;
-  padding: 8px 10px; display: grid; grid-template-columns: 1fr 1fr; gap: 6px;
-  position: relative;
-}
-.am-entry .am-full { grid-column: 1 / -1; }
-.am-entry input, .am-entry textarea {
-  width: 100%; background: var(--paper); color: var(--fg);
-  border: 1px solid var(--line); padding: 4px 6px; font: inherit; border-radius: 2px;
-}
-.am-entry textarea { min-height: 50px; resize: vertical; }
-.am-remove {
-  position: absolute; top: 4px; right: 4px;
-  background: none; border: 0; color: var(--muted); cursor: pointer; font: inherit;
-}
-.am-remove:hover { color: var(--signal-alert); }
-
 .md-body {
   position: relative;
   display: flex; flex-direction: column;
@@ -3851,7 +3803,6 @@ a.set-dl { display: inline-flex; align-items: center; text-decoration: none; }
 .log-head,
 .pages-th,
 .recent-th,
-.am-sect-hd,
 .obs-members-l,
 .page-ancestors,
 .md-mode-btn,
@@ -4075,8 +4026,7 @@ code, pre, kbd, samp {
   border-radius: var(--radius-badge);
 }
 .page-title-input:focus-visible,
-.chip-input:focus-visible,
-.am-input:focus-visible { outline-offset: 4px; }
+.chip-input:focus-visible { outline-offset: 4px; }
 
 /* Inputs get the ring on real focus too — they are the one place where the
    focus target is not obvious from context. */
@@ -4146,7 +4096,7 @@ code, pre, kbd, samp {
      floating ambiguously on it. — */
 .pages-table, .pages-list, .list,
 .obs-card, .tier-card, .board-card,
-.am-sect, .set-sec, .bento-tile, .kind-card {
+.set-sec, .bento-tile, .kind-card {
   border-radius: var(--radius-card);
   box-shadow: var(--shadow-card);
   overflow: hidden;
@@ -4180,7 +4130,6 @@ code, pre, kbd, samp {
    yet", which is the one job dashes still do well. It just needs a border
    colour that survives on white. */
 .board-card-empty { border-color: var(--i-2); border-radius: var(--radius-badge); }
-.am-input { border-bottom-style: solid; border-bottom-color: var(--line); }
 .md-rendered hr, .topic-desc-md h2, .board-body-md h2 { border-color: var(--line); }
 
 /* — Decorative ink. A sparkline or a progress fill in full --accent is a
@@ -4384,7 +4333,7 @@ code, pre, kbd, samp {
 /* Card interiors. 14px was the file's most common padding and it is one step
    too tight for the type sizes above it. */
 .obs-card, .tier-card, .board-card,
-.am-sect, .kind-card, .pj-card     { padding: var(--sp-4); gap: var(--sp-3); }
+.kind-card, .pj-card               { padding: var(--sp-4); gap: var(--sp-3); }
 .card-b                            { padding: var(--sp-4); }
 .recent-th, .recent-row { padding: var(--sp-3) var(--sp-4); }
 .pages-row               { padding: 11px var(--sp-4); }
@@ -4392,10 +4341,10 @@ code, pre, kbd, samp {
 .obs-grid, .tier-grid, .pages-board { gap: var(--sp-3); }
 
 /* ── Label / value pairs ───────────────────────────────────────────────
-   Six regions each invented their own version of "a small label beside a
-   value": the metadata rail, the about-me fields, the settings rows, the
-   project meta grid, the aside blocks and the tweaks panel. One rhythm now. */
-.side-row, .aside-block .b .row-i, .pj-meta-row, .am-field {
+   Five regions each invented their own version of "a small label beside a
+   value": the metadata rail, the settings rows, the project meta grid, the
+   aside blocks and the tweaks panel. One rhythm now. */
+.side-row, .aside-block .b .row-i, .pj-meta-row {
   display: grid;
   grid-template-columns: 84px minmax(0, 1fr);
   gap: var(--sp-3);
@@ -5007,7 +4956,7 @@ input[type="checkbox"], input[type="radio"] {
 /* Cards get a top sheen — the single cheapest way to make a flat rectangle
    read as a surface with an edge rather than a shape cut out of the page. */
 .obs-card, .tier-card, .pj-card, .side-card,
-.board-card, .kind-card, .set-sec, .am-sect, .pages-table, .pages-list {
+.board-card, .kind-card, .set-sec, .pages-table, .pages-list {
   background-image: linear-gradient(180deg, var(--sheen) 0, transparent 42px);
 }
 
@@ -6254,17 +6203,11 @@ body.cv-settled .screen, body.cv-settled .page {
   justify-content: start;
 }
 
-/* ── About me ──────────────────────────────────────────────────────────
-   Its labels are sentences, not keys, so they stack above their field
-   rather than sharing the 84px label column the metadata rail uses — in
-   that column "Tone the AI should match" wrapped to three uppercase lines
-   and took longer to read than the answer would. */
-.am-field {
-  display: flex; flex-direction: column; gap: 3px;
-  grid-template-columns: none;
-  padding: var(--sp-2) 0;
-  align-items: stretch;
-}
+/* A label that stacks above its field rather than sharing the 84px label
+   column the metadata rail uses — these are sentences, not keys, and in that
+   column they wrapped to three uppercase lines and took longer to read than
+   the answers would. About me's fields are gone; the attach-a-link form
+   below is what still reads this way. */
 .am-lbl {
   display: flex; align-items: baseline; gap: var(--sp-2); flex-wrap: wrap;
   font-size: var(--fz-micro);
@@ -6273,40 +6216,8 @@ body.cv-settled .screen, body.cv-settled .page {
   font-weight: 550;
   color: var(--muted);
 }
-/* The hint carries what the parenthetical used to, in a voice you can read. */
-.am-hint {
-  text-transform: none; letter-spacing: var(--track-body);
-  font-weight: 400; font-size: var(--fz-micro); color: var(--faint);
-}
-.am-input {
-  width: 100%;
-  background: transparent;
-  border: 0; border-bottom: 1px solid var(--line);
-  padding: 5px 0;
-  font: inherit; font-size: var(--fz-mini); color: var(--fg);
-  transition: border-color var(--dur-1) var(--ease-out);
-}
-.am-input:focus { outline: none; border-bottom-color: var(--accent); }
-.am-grid { gap: var(--sp-3); }
-.am-sect { padding: var(--sp-4); }
-
-/* An add control is the size of its own label. `.sb-secondary` stretched to
-   the container, so "+ experience" was a full-width empty bar that read as a
-   dropzone. */
-.am-add {
-  align-self: flex-start;
-  display: inline-flex; align-items: center; gap: 6px;
-  width: auto; margin-top: var(--sp-2);
-}
-.am-entry {
-  border: 1px solid var(--line);
-  border-radius: var(--radius-btn);
-  padding: var(--sp-3);
-  background: var(--paper);
-}
-
-/* Attach-a-link form. Label above field, like About me — these are
-   sentences, and the modal has the width for them. */
+/* Attach-a-link form. Label above field — these are sentences, and the modal
+   has the width for them. */
 .att-link-form { display: flex; flex-direction: column; gap: 4px; }
 .att-link-form .am-lbl { margin-top: var(--sp-2); }
 .att-link-form .set-input, .att-link-form .page-body-ta { width: 100%; }
@@ -7050,28 +6961,6 @@ body:has(.sb-vault-banner) .cv-toast { bottom: calc(var(--banner-h) + var(--sp-3
   .welcome { animation: none; }
   .welcome-go { transition: none; }
 }
-
-/* ── About me: the résumé, folded ──────────────────────────────────────
-   Experience/skills/education/highlights are agent-useful and person-boring:
-   one closed disclosure instead of four open sections, so the page reads as
-   a person with a background rather than a CV with a personality quiz
-   stapled to the top. */
-.am-cv { margin-top: var(--sp-6); }
-.am-cv-s {
-  cursor: pointer; list-style: none;
-  display: inline-flex; align-items: center; gap: var(--sp-2);
-  font-size: var(--fz-mini); color: var(--muted);
-  padding: var(--sp-2) 0;
-  transition: color var(--dur-1) var(--ease-out);
-}
-.am-cv-s::-webkit-details-marker { display: none; }
-.am-cv-s:hover { color: var(--fg); }
-.am-cv-chev { display: inline-flex; width: 14px; height: 14px; color: var(--faint); }
-.am-cv-chev svg { width: 14px; height: 14px; transition: transform var(--dur-2) var(--ease-out); }
-.am-cv[open] .am-cv-chev svg { transform: rotate(90deg); }
-.am-cv-hint { color: var(--faint); }
-.am-cv-body { padding-top: var(--sp-2); }
-@media (prefers-reduced-motion: reduce) { .am-cv-chev svg { transition: none; } }
 
 /* Project card: the folder, legible from outside. Composition chips in the
    header — which kinds, how many — then a glimpse of the first pages. A

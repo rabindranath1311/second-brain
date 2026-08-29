@@ -6029,129 +6029,105 @@ function MentionFilterScreen(slug) {
 }
 
 
+/* ── screen: About me ───────────────────────────────────────────────────
+   `context/about-me.md`, and nothing else. Its content is its body — prose,
+   because prose is the only shape the convention leaves for it.
+
+   This screen used to be a form: Identity, Taste, Communication and State
+   over four résumé sections — experience, skills, education, highlights.
+   Not one of those fields ever reached the disk. It sent eight structured
+   keys through `updateAboutMe` → `updatePage`, whose write list is title,
+   tags, aliases, url, status, two `meta` keys and the body; the other eight
+   were dropped and the save still reported success. The read side never had
+   them either — `aboutMe()` returns `{ body, updated, path }` — so every
+   load re-created the objects empty and the form came back blank whatever
+   you had typed into it. It has never worked, in either direction.
+
+   Making it work was the other option, and CONVENTION.md decides against it
+   twice over. Frontmatter cannot take it: the key list is closed,
+   `mdfile.serialize` throws on anything outside it, and YAML there holds
+   neither a nested object nor a list of dicts. The body could take it, but
+   only by claiming `## Experience` and its siblings as structural headings
+   the app parses back and regenerates on every write — and this is the one
+   file Obsidian and your agent write freely, in whatever shape the sentence
+   wants. Rewriting it from a form would drop what they had put there, which
+   is the loss the inspo wall already documents and write safety already
+   forbids.
+
+   So the page is what the scaffold template, the demo vault and
+   SETUP-PROMPT.md always described it as: who you are, in your own words,
+   read before anything is written in your voice. Anything already sitting in
+   someone's file stays there, untouched and readable in Obsidian. Nothing is
+   lost that was ever gained. */
 function AboutMeScreen() {
   const wrap = h('div', { className: 'screen page-screen' });
   let me = null;
   let dirty = false;
   let saveTimer = null;
 
+  /* The same three-state strip the page editor carries, for the same reason:
+     this autosaves 600ms after you stop typing and used to say nothing at
+     all. Silence is survivable while the write works and a lie when it does
+     not — and the write here can be refused outright, because a vault
+     adopted without `context/about-me.md` has nowhere to put one. */
+  const setSaveState = (state, detail) => {
+    const el = wrap.querySelector('.save-state');
+    if (!el) return;
+    el.setAttribute('data-state', state);
+    if (detail) el.setAttribute('title', detail); else el.removeAttribute('title');
+    clear(el);
+    if (state === 'saving') {
+      el.appendChild(h('span', { className: 'save-dot' }));
+      el.appendChild(document.createTextNode('Saving…'));
+    } else if (state === 'saved') {
+      el.appendChild(icon('check'));
+      el.appendChild(document.createTextNode('Saved'));
+      clearTimeout(el._t);
+      el._t = setTimeout(() => {
+        if (el.getAttribute('data-state') === 'saved') setSaveState('idle');
+      }, 2200);
+    } else if (state === 'error') {
+      clearTimeout(el._t);       // a failure stays put until the next attempt
+      el.appendChild(icon('x'));
+      el.appendChild(document.createTextNode('Not saved'));
+    }
+  };
+
   const queueSave = () => {
     dirty = true;
+    setSaveState('saving');
     clearTimeout(saveTimer);
     saveTimer = setTimeout(commit, 600);
   };
+  const flushSave = () => { clearTimeout(saveTimer); commit(); };
+
   const commit = async () => {
     if (!dirty || !me) return;
     dirty = false;
     try {
-      const patched = await SB.data().updateAboutMe({
-        identity: me.identity, taste: me.taste,
-        communication: me.communication, state: me.state, body: me.body,
-        experience: me.experience, skills: me.skills,
-        education: me.education, highlights: me.highlights,
-      });
+      const patched = await SB.data().updateAboutMe({ body: me.body });
+      // A refusal used to end in a console.warn nobody has open, with the
+      // edit still on screen — the page looked saved and was not.
+      if (!patched || patched.ok === false) {
+        const why = patched && patched.reason === 'no-about-me'
+          ? 'This vault has no context/about-me.md to write to.'
+          : (patched && (patched.message || patched.reason))
+            || 'The vault refused the write.';
+        console.warn('about-me save refused:', why);
+        setSaveState('error', why);
+        return;
+      }
       me.updated = patched.updated;
-    } catch (e) { console.warn('about-me save failed', e); }
+      setSaveState('saved');
+      // Patched in place rather than re-laid out: the prose editor owns its
+      // own caret and a rebuild would take it away mid-sentence.
+      const when = wrap.querySelector('.page-meta-when');
+      if (when) when.textContent = me.updated ? 'updated ' + fmtDate(me.updated) : '';
+    } catch (e) {
+      console.warn('about-me save failed', e);
+      setSaveState('error', String((e && e.message) || e));
+    }
   };
-
-  // ── Resume sections (lives in about_me.extras) ──────────────────────
-  // Each is an array of dicts; user can add/remove entries.
-  const ensureArr = (key) => { if (!Array.isArray(me[key])) me[key] = []; };
-
-  function entryList(key, fields, addLabel) {
-    ensureArr(key);
-    const wrap = h('div', { className: 'am-list' });
-    me[key].forEach((entry, idx) => {
-      const row = h('div', { className: 'am-entry' });
-      fields.forEach(([fkey, label, opts]) => {
-        const isLong = opts && opts.long;
-        const input = isLong
-          ? h('textarea', {
-              placeholder: label, value: String(entry[fkey] || ''),
-              onInput: (e) => { entry[fkey] = e.target.value; queueSave(); },
-            })
-          : h('input', {
-              type: 'text', placeholder: label, value: String(entry[fkey] || ''),
-              onInput: (e) => { entry[fkey] = e.target.value; queueSave(); },
-            });
-        row.appendChild(h('label', { className: isLong ? 'am-full' : '' },
-          h('span', { className: 'cb-field-label' }, label), input));
-      });
-      row.appendChild(h('button', {
-        className: 'am-remove', title: 'remove',
-        onClick: () => { me[key].splice(idx, 1); queueSave(); layout(); },
-      }, '×'));
-      wrap.appendChild(row);
-    });
-    // `.sb-secondary` stretched to the container, so "+ experience" rendered
-    // as a full-width empty bar that reads as a dropzone rather than a
-    // button. An add control should be the size of its own label.
-    wrap.appendChild(h('button', {
-      className: 'btn am-add',
-      onClick: () => {
-        me[key].push(Object.fromEntries(fields.map(([k]) => [k, ''])));
-        queueSave(); layout();
-      },
-    }, icon('plus'), 'Add ' + addLabel));
-    return wrap;
-  }
-
-  function highlightList() {
-    ensureArr('highlights');
-    const wrap = h('div', { className: 'am-list' });
-    me.highlights.forEach((line, idx) => {
-      wrap.appendChild(h('div', { className: 'am-entry' },
-        h('input', {
-          className: 'am-full', type: 'text',
-          placeholder: 'Shipped X in Q4, +30% retention …',
-          value: String(line || ''),
-          onInput: (e) => { me.highlights[idx] = e.target.value; queueSave(); },
-        }),
-        h('button', {
-          className: 'am-remove',
-          onClick: () => { me.highlights.splice(idx, 1); queueSave(); layout(); },
-        }, '×')));
-    });
-    wrap.appendChild(h('button', {
-      className: 'sb-secondary',
-      onClick: () => { me.highlights.push(''); queueSave(); layout(); },
-    }, '+ highlight'));
-    return wrap;
-  }
-
-
-  const subField = (sectionKey, fieldKey, label, kind, hint) => {
-    me[sectionKey] = me[sectionKey] || {};
-    const val = me[sectionKey][fieldKey];
-    const renderVal = Array.isArray(val) ? val.join(', ') : (val == null ? '' : String(val));
-    /* Labels sit ABOVE their field, not in a column beside it.
-       These are sentences, not keys — "Tone to match", "Preferred form" —
-       and in the shared 84px label column they wrapped into three-line
-       uppercase stacks that took longer to read than the answers would. */
-    // The label sits above the field rather than wrapping it, so the pairing
-    // has to be stated. `sectionKey.fieldKey` is already unique per field.
-    const fid = 'am-' + sectionKey + '-' + fieldKey;
-    return h('div', { className: 'am-field' },
-      h('label', { className: 'am-lbl', for: fid }, label,
-        hint ? h('span', { className: 'am-hint' }, hint) : null),
-      h('input', {
-        className: 'am-input',
-        id: fid,
-        value: renderVal,
-        placeholder: kind === 'list' ? 'Separate with commas' : '',
-        onInput: (e) => {
-          const v = e.target.value;
-          me[sectionKey][fieldKey] = kind === 'list'
-            ? v.split(',').map((s) => s.trim()).filter(Boolean)
-            : v;
-          queueSave();
-        },
-      }));
-  };
-
-  const section = (title, key, fields) => h('div', { className: 'am-sect' },
-    h('div', { className: 'am-sect-hd' }, title),
-    fields.map(([fkey, label, kind, hint]) => subField(key, fkey, label, kind, hint)));
 
   const layout = () => {
     clear(wrap);
@@ -6166,100 +6142,38 @@ function AboutMeScreen() {
               h('span', null, 'You')),
             h('span', { className: 'page-title-static' }, 'About me'),
             h('div', { className: 'page-meta-side' },
-              h('span', { className: 'page-meta-when' }, me.updated ? 'updated ' + fmtDate(me.updated) : '')))),
-        h('div', { className: 'am-grid' },
-          section('Identity', 'identity', [
-            ['name', 'Name', 'text'],
-            ['values', 'Core values', 'list', 'What you will not trade away'],
-            ['current_focus', 'Current focus', 'text', 'What you are on right now'],
-          ]),
-          section('Taste', 'taste', [
-            ['visual', 'Visual taste', 'list'],
-            ['writing', 'Writing style', 'text'],
-            ['music', 'Music', 'list'],
-          ]),
-          section('Communication', 'communication', [
-            /* Was "Tone the AI should match" — this app has no AI. The
-               file is read by whichever agent you point at your vault, so
-               the label says that instead of implying a feature. */
-            ['tone', 'Tone to match', 'text', 'How you want your writing to sound'],
-            ['preferred_form', 'Preferred form', 'text', 'Bullets, prose, something else'],
-          ]),
-          section('State', 'state', [
-            ['energy_pattern', 'Energy pattern', 'text', 'When you do your best work'],
-            ['mood_baseline', 'Mood baseline', 'text'],
-          ])),
-
-        /* ── In your own words — before the résumé, because this page is
-           about a person and prose is how a person actually sounds. The
-           field sat at the very bottom, under four CV sections. */
-        h('div', { className: 'sect-hd', style: { marginTop: '24px' } }, 'In your own words'),
-        h('textarea', {
-          className: 'page-body-ta',
-          placeholder: 'Whatever matters that no field asks for — what you care about, what you are avoiding, what a good day looks like.',
-          value: me.body,
-          onInput: (e) => { me.body = e.target.value; queueSave(); },
-        }),
-
-        /* ── Background, folded ─────────────────────────────────────────
-           Experience, skills, education and highlights are résumé material:
-           useful to an agent writing on your behalf, but they were four
-           always-open sections that made the page read as a CV with a
-           personality quiz stapled to the top. One closed disclosure now —
-           the data is all still there and still written to the same file,
-           it just stops being the page's centre of gravity. */
-        (() => {
-          const n = (me.experience || []).length + (me.skills || []).length
-                  + (me.education || []).length + (me.highlights || []).length;
-          const det = h('details', { className: 'am-cv' },
-            h('summary', { className: 'am-cv-s' },
-              h('span', { className: 'am-cv-chev' }, icon('chevron-right')),
-              'Background',
-              h('span', { className: 'am-cv-hint' },
-                n ? nOf(n, 'entry') + ' — experience, skills, education, highlights'
-                  : 'experience, skills, education, highlights')),
-            h('div', { className: 'am-cv-body' },
-              h('div', { className: 'sect-hd' }, 'Experience'),
-              entryList('experience', [
-                ['role',     'Role',     {}],
-                ['org',      'Organization', {}],
-                ['start',    'Start', { placeholder: '2023' }],
-                ['end',      'End', { placeholder: 'present' }],
-                ['location', 'Location', {}],
-                ['summary',  'Summary', { long: true, placeholder: 'What you shipped, and what it changed' }],
-              ], 'experience'),
-              h('div', { className: 'sect-hd', style: { marginTop: '20px' } }, 'Skills'),
-              entryList('skills', [
-                ['name',  'Skill name', {}],
-                ['area',  'Area (Code / Design / Product / \u2026)', {}],
-                ['level', 'Level (expert / proficient / learning)', {}],
-              ], 'skill'),
-              h('div', { className: 'sect-hd', style: { marginTop: '20px' } }, 'Education'),
-              entryList('education', [
-                ['school', 'School / institution', {}],
-                ['degree', 'Degree', {}],
-                ['field',  'Field', {}],
-                ['start',  'Start', {}],
-                ['end',    'End', {}],
-              ], 'education'),
-              h('div', { className: 'sect-hd', style: { marginTop: '20px' } }, 'Highlights'),
-              highlightList()));
-          return det;
-        })(),
-
-        /* "download resume.md" and "critique with AI" both threw the moment
-           you pressed them \u2014 the export went through gone() and the critique
-           raised before its first await. Two more buttons that existed only
-           to fail, the same shape as the AI activity log. About me is a file
-           in your vault; export it with the page Actions like anything else. */
-        null)));
-
+              h('span', {
+                className: 'save-state', 'data-state': 'idle',
+                role: 'status', 'aria-live': 'polite',
+              }),
+              h('span', { className: 'page-meta-when' },
+                me.updated ? 'updated ' + fmtDate(me.updated) : '')))),
+        /* No file, no editor. A vault adopted as it was found has no
+           `context/about-me.md`, and every save into it would be refused —
+           so the gesture is not offered. The app never writes on adoption. */
+        me.path === null
+          ? EmptyState('This vault has no About me page.',
+              'The app writes context/about-me.md when it scaffolds a new vault; '
+              + 'this one was adopted as it was found, and adoption never writes. '
+              + 'Create context/about-me.md in Obsidian and it opens here.')
+          : ProseEditor({
+              getValue: () => me.body || '',
+              setValue: (v) => { me.body = v; queueSave(); },
+              onDone: flushSave,
+              placeholder: 'Who you are, what you work on, what you care about. '
+                + 'Any agent reads this before it writes anything in your voice.',
+              minHeight: 320,
+            }))));
   };
 
-  SB.data().aboutMe().then((d) => { me = d; layout(); }).catch(() => {
-    wrap.appendChild(EmptyState('Failed to load About Me.', 'Check the server.'));
+  SB.data().aboutMe().then((d) => { me = d; layout(); }).catch((e) => {
+    // There is no server to check — this app has none. What can fail here is
+    // the vault handle, so say that instead.
+    clear(wrap);
+    wrap.appendChild(EmptyState('Could not read About me.',
+      String((e && e.message) || e)));
   });
-  wrap.__teardown = () => { if (dirty) commit(); };
+  wrap.__teardown = () => { if (dirty) flushSave(); };
   return wrap;
 }
 
