@@ -22,7 +22,7 @@ import { isExcalidrawPath, parseExcalidraw, serializeExcalidraw,
          hasExcalidrawData, withBackOfNote } from "./excalidraw.js";
 import { clipFrontmatter, urlsFromText, findByUrl, titleFromUrl } from "./clip.js";
 import { parse, unescapeUser } from "./mdfile.js";
-import { basenameOf, resolveWikilink } from "./links.js";
+import { basenameOf, resolveWikilink, linkResolver } from "./links.js";
 
 const DEFAULT_LIMIT = 200;
 
@@ -360,6 +360,44 @@ export function bytesFromDataURL(url) {
 }
 
 
+// ── inbound links ───────────────────────────────────────────────────────────
+
+/**
+ * Resolve a mention to the page it points at, the way the vault resolves one.
+ *
+ * A mention is whatever links a page: a wikilink target, or — when the mention
+ * picker wrote it — the target's id, the one form that survives a rename. So
+ * this is `resolveWikilink`'s basename → aliases → path (CONVENTION rule 3,
+ * case-insensitive) with the id table behind it.
+ *
+ * Deliberately NOT the target's `title:`. Obsidian never reads that field, so
+ * matching on it counts links Obsidian draws as broken — a page whose filename
+ * was sanitised, or suffixed past a collision — and misses the live ones
+ * written to an alias, which is exactly how `renamePlan` keeps a renamed page's
+ * inbound links alive.
+ *
+ * Built once per query, never once per mention: `resolveWikilink` sorts the
+ * whole vault on every call, and a backlink scan asks about every mention in it.
+ */
+function mentionResolver(v) {
+  const entries = v.list();
+  const byLink = linkResolver(entries);
+  const byId = new Map(entries.map((e) => [String(e.id).toLowerCase(), e]));
+  return (mention) => {
+    const m = String(mention || "").trim();
+    if (!m) return null;
+    return byLink(m) || byId.get(m.toLowerCase()) || null;
+  };
+}
+
+/** True when `e` links to the page with this id, in any of the forms above. */
+function linksTo(e, id, resolve) {
+  return (e.mentions || []).some((m) => {
+    const hit = resolve(m);
+    return !!hit && hit.id === id;
+  });
+}
+
 function pageOut(entry, body) {
   return {
     id: entry.id,
@@ -419,13 +457,17 @@ export class Data {
     else if (kind) items = items.filter((e) => e.kind === kind);
     if (tag) items = items.filter((e) => (e.tags || []).includes(tag));
     if (mention) {
-      const needle = String(mention).toLowerCase();
-      const target = this.v.index.get(mention);
-      const title = (target && target.title || "").toLowerCase();
-      items = items.filter((e) => (e.mentions || []).some((m) => {
-        const ml = m.toLowerCase();
-        return ml === needle || (title && ml === title);
-      }));
+      // Asked for by id (the project screen) or by name (a link target).
+      const resolve = mentionResolver(this.v);
+      const target = this.v.index.get(mention) || resolve(mention);
+      if (target) {
+        items = items.filter((e) => linksTo(e, target.id, resolve));
+      } else {
+        // Nothing in the vault answers to it — an asset, or a dead link. The
+        // literal string is then the only honest thing to match on.
+        const needle = String(mention).toLowerCase();
+        items = items.filter((e) => (e.mentions || []).some((m) => m.toLowerCase() === needle));
+      }
     }
     if (q) {
       const n = q.toLowerCase();
@@ -719,11 +761,10 @@ export class Data {
 
   /** Pages that link to this one. Computed from the index, not stored. */
   backlinks(id) {
-    const target = this.v.index.get(id);
-    if (!target) return { items: [], count: 0 };
-    const title = (target.title || "").toLowerCase();
+    if (!this.v.index.has(id)) return { items: [], count: 0 };
+    const resolve = mentionResolver(this.v);
     const items = this.v.list()
-      .filter((e) => e.id !== id && (e.mentions || []).some((m) => m.toLowerCase() === title))
+      .filter((e) => e.id !== id && linksTo(e, id, resolve))
       .map((e) => pageOut(e));
     return { items, count: items.length };
   }
@@ -748,7 +789,8 @@ export class Data {
   orbit(id) {
     const target = this.v.index.get(id);
     if (!target) return { items: [], count: 0, tag: null };
-    const title = (target.title || "").toLowerCase();
+    // The link half resolves; the tag half is the topic's own name, slugged.
+    const resolve = mentionResolver(this.v);
     const tag = tagSlug(target.title || "");
     const seen = new Map();
     for (const e of this.v.list()) {
@@ -760,7 +802,7 @@ export class Data {
       // vault by definition, so its presence proves nothing about this idea,
       // and an orbit is only worth reading if every row is evidence.
       if (ROOT_STRUCTURAL.has(e.path)) continue;
-      const mentioned = (e.mentions || []).some((m) => m.toLowerCase() === title);
+      const mentioned = linksTo(e, id, resolve);
       const tagged = tag && (e.tags || []).some((t) => tagSlug(t) === tag);
       if (!mentioned && !tagged) continue;
       // `via` is what lets the UI say WHY a page is in the orbit — a link you
@@ -950,8 +992,12 @@ export class Data {
    * reported an empty vault however many projects were on disk.
    */
   async projects() {
+    const all = this.v.list();
+    // One lookup for the whole sweep — a resolver per project would sort the
+    // vault once per folder.
+    const resolve = mentionResolver(this.v);
     const byFolder = new Map();
-    for (const e of this.v.list()) {
+    for (const e of all) {
       const m = /^projects\/([^/]+)\//.exec(e.path);
       if (!m) continue;
       if (!byFolder.has(m[1])) byFolder.set(m[1], []);
@@ -967,18 +1013,24 @@ export class Data {
          showing two of them. Both were true; only one of them was the answer
          to the question the label asks. */
       const seen = new Set(rest.map((e) => e.id));
-      const mentioners = [];
-      if (note) {
-        const title = String(note.title || "").toLowerCase();
-        const idl = String(note.id || "").toLowerCase();
-        for (const e of this.v.list()) {
-          if (e.id === note.id || seen.has(e.id)) continue;
-          if ((e.mentions || []).some((m) => {
-            const ml = String(m).toLowerCase();
-            return ml === idl || (title && ml === title);
-          })) mentioners.push(e);
-        }
-      }
+      /* …but a mention is membership only when it is EVIDENCE. `index` links to
+         every page in the vault by definition, so it mentions every project and
+         was listed inside all of them — a row equally true of every project,
+         and therefore saying nothing about this one. Same for the log, and for
+         plumbing.
+
+         This is isPlumbing + ROOT_STRUCTURAL, the pair `orbit` uses, and NOT
+         isSystemEntry, which looks like the obvious call and is the wrong one
+         twice over: it does not cover index.md at all (it is isPlumbing plus
+         isProjectNote, and the catalog is neither), so it would leave this bug
+         exactly where it was — and it drops project notes, when one project
+         citing another is the most interesting row here, for the same reason
+         it is in an orbit. */
+      const mentioners = note
+        ? all.filter((e) => e.id !== note.id && !seen.has(e.id)
+            && !isPlumbing(e) && !ROOT_STRUCTURAL.has(e.path)
+            && linksTo(e, note.id, resolve))
+        : [];
       // One definition of "inside", used by the count, the card's preview and
       // its composition alike: folder members plus the pages that mention the
       // project. `members` alone was folder-only, so a card could say "Empty"

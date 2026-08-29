@@ -27,33 +27,56 @@ export function parseWikilink(inner) {
 
 const lower = (s) => String(s || "").toLowerCase();
 
+/** The extension a link target may spell out, and a basename drops. */
+const EXT = /\.(md|canvas)$/i;
+
 /** Basename of a vault path, without the extension. */
 export function basenameOf(path) {
   const name = String(path).split("/").pop();
-  return name.replace(/\.(md|canvas)$/i, "");
+  return name.replace(EXT, "");
+}
+
+/** A link target, normalised the way every tier compares it. */
+const targetKey = (target) => lower(String(target).replace(EXT, "")).trim();
+
+/**
+ * The lookup `resolveWikilink` walks, built once for many resolutions.
+ *
+ * Same three tiers in the same order, and the same tie-break: entries are
+ * indexed in path order and the first to claim a key keeps it, so a lookup
+ * answers exactly what the linear scan below would have.
+ *
+ * It exists because that scan sorts the whole vault on every call, and the
+ * queries that need it — backlinks, a topic's orbit — resolve every mention in
+ * the vault. One sort per query, not one per mention.
+ */
+export function linkResolver(entries) {
+  const byBasename = new Map(), byAlias = new Map(), byPath = new Map();
+  const claim = (map, key, e) => { if (key && !map.has(key)) map.set(key, e); };
+  const sorted = [...entries].sort((a, b) => String(a.path).localeCompare(String(b.path)));
+  for (const e of sorted) {
+    claim(byBasename, lower(basenameOf(e.path)), e);              // 1) basename
+    for (const a of e.aliases || []) claim(byAlias, lower(a), e); // 2) aliases
+    const p = lower(e.path);                                      // 3) relative path,
+    claim(byPath, p, e);                                          //    with or
+    claim(byPath, p.replace(EXT, ""), e);                         //    without the extension
+  }
+  return (target) => {
+    const t = targetKey(target);
+    if (!t) return null;
+    return byBasename.get(t) || byAlias.get(t) || byPath.get(t) || null;
+  };
 }
 
 /**
  * Resolve a link target against index entries ({id, path, title, aliases}).
  * Returns the entry, or null. Ties are broken by path so the choice is stable.
+ *
+ * Resolving many targets against one set of entries? Build the lookup once with
+ * `linkResolver` — this rebuilds it, sort and all, on every call.
  */
 export function resolveWikilink(target, entries) {
-  const t = lower(String(target).replace(/\.(md|canvas)$/i, "")).trim();
-  if (!t) return null;
-  const sorted = [...entries].sort((a, b) => String(a.path).localeCompare(String(b.path)));
-
-  // 1) filename basename — what Obsidian tries first
-  for (const e of sorted) if (lower(basenameOf(e.path)) === t) return e;
-  // 2) aliases
-  for (const e of sorted) {
-    for (const a of e.aliases || []) if (lower(a) === t) return e;
-  }
-  // 3) relative path, with or without extension
-  for (const e of sorted) {
-    const p = lower(e.path);
-    if (p === t || p.replace(/\.(md|canvas)$/i, "") === t) return e;
-  }
-  return null;
+  return linkResolver(entries)(target);
 }
 
 /** True when the target names an embeddable asset rather than a page. */

@@ -3,8 +3,9 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { resolveWikilink, parseWikilink, findWikilinks, basenameOf, isEmbeddableFile,
-         withMention, withoutMention, mentionName, isLinkOnlyLine } from "../vault/links.js";
+import { resolveWikilink, linkResolver, parseWikilink, findWikilinks, basenameOf,
+         isEmbeddableFile, withMention, withoutMention, mentionName,
+         isLinkOnlyLine } from "../vault/links.js";
 
 const ENTRIES = [
   { id: "01A", path: "notes/Lantern Notes.md",      title: "Lantern Notes",   aliases: [] },
@@ -45,6 +46,31 @@ test("basename beats alias when both could match", () => {
 test("an unresolvable target returns null, not a guess", () => {
   assert.equal(resolveWikilink("Nothing Here", ENTRIES), null);
   assert.equal(resolveWikilink("", ENTRIES), null);
+});
+
+test("linkResolver answers exactly what the one-shot scan answers", () => {
+  const resolve = linkResolver(ENTRIES);
+  const targets = ["Lantern Notes", "lantern notes", "Quires", "QS", "Design",
+    "projects/Bindery/Bindery.md", "projects/Bindery/Bindery", "canvas/Pressed Leaf.md",
+    "Pressed Leaf.canvas", " Bindery ", "Nothing Here", ""];
+  for (const t of targets) {
+    assert.deepEqual(resolve(t), resolveWikilink(t, ENTRIES), `differs on ${JSON.stringify(t)}`);
+  }
+});
+
+test("linkResolver keeps the tiers and the tie-break, whatever order it is fed", () => {
+  // Fed alias-first and out of path order: basename still wins, and the
+  // lexicographically first path still breaks a tie between two of them.
+  const entries = [
+    { id: "Y", path: "notes/Beta.md",  title: "Beta",  aliases: ["Alpha"] },
+    { id: "X", path: "notes/Alpha.md", title: "Alpha", aliases: [] },
+    { id: "Z", path: "zz/Same.md",     title: "Same",  aliases: [] },
+    { id: "W", path: "aa/Same.md",     title: "Same",  aliases: [] },
+  ];
+  const resolve = linkResolver(entries);
+  assert.equal(resolve("Alpha").id, "X", "basename beats alias");
+  assert.equal(resolve("Same").id, "W", "ties break by path, so the answer is stable");
+  assert.equal(resolve("Same"), resolve("Same"), "and does not drift between calls");
 });
 
 test("parses display text, headings and both together", () => {

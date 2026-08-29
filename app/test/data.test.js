@@ -87,6 +87,83 @@ test("orbit() gathers what says a topic's name, by link and by tag", async () =>
   assert.ok(!items.some((p) => p.id === "01QQQQQQQQQQQQQQQQQQQQQQQQ"));
 });
 
+/* ── what links here ───────────────────────────────────────────────────────
+   backlinks(), orbit() and a project's mentioners all ask one question, and
+   it is answered the way Obsidian answers it: basename → aliases → path,
+   case-insensitive. A `title:` field is not a link target — Obsidian never
+   reads one — so matching on it invents backlinks the vault draws as broken
+   and misses every link written to an alias, which is how a renamed page
+   keeps its inbound links (see renamePlan). */
+
+// A page whose filename is NOT its title: rule 3's collision suffix. The live
+// targets are `Quire Structures 2` (the filename) and `Quires` (the alias).
+// `Quire Structures` — the title — is a target nothing in the vault answers to.
+const QS = "01QQQQQQQQQQQQQQQQQQQQQQQQ";
+const LINK_FILES = {
+  "notes/Quire Structures 2.md": md(P(QS, { title: "Quire Structures", aliases: ["Quires"], updated: TS(29) }), "the fold is the unit"),
+  "notes/By Filename.md": md(P("01F1F1F1F1F1F1F1F1F1F1F1F1", { title: "By Filename", updated: TS(28) }), "see [[Quire Structures 2]]"),
+  "notes/By Alias.md": md(P("01A1A1A1A1A1A1A1A1A1A1A1A1", { title: "By Alias", updated: TS(27) }), "see [[Quires]]"),
+  "notes/By Path.md": md(P("01P1P1P1P1P1P1P1P1P1P1P1P1", { title: "By Path", updated: TS(26) }), "see [[notes/Quire Structures 2.md]]"),
+  // What the mention picker writes: the id, the one form a rename cannot break.
+  "notes/By Id.md": md(P("01D1D1D1D1D1D1D1D1D1D1D1D1", { title: "By Id", updated: TS(25) }), `see [[${QS}]]`),
+  "notes/By Title.md": md(P("01T1T1T1T1T1T1T1T1T1T1T1T1", { title: "By Title", updated: TS(24) }), "see [[Quire Structures]]"),
+  "notes/Unrelated.md": md(P("01U1U1U1U1U1U1U1U1U1U1U1U1", { title: "Unrelated", updated: TS(23) }), "nothing links out of here"),
+};
+
+async function linkFixture(extra = {}) {
+  const v = new Vault(new MemoryBackend({ ...LINK_FILES, ...extra }), { now: () => TS(30) });
+  await v.buildIndex();
+  return new Data(v, { now: () => new Date(TS(30)) });
+}
+
+test("backlinks resolve by filename, alias, path and id — never by title:", async () => {
+  const d = await linkFixture();
+  const { items, count } = d.backlinks(QS);
+  assert.deepEqual(items.map((p) => p.title).sort(),
+    ["By Alias", "By Filename", "By Id", "By Path"]);
+  assert.equal(count, 4);
+  assert.ok(!items.some((p) => p.title === "By Title"),
+    "[[Quire Structures]] names no file and no alias — Obsidian draws it broken, "
+    + "so counting it would claim a link the vault does not have");
+  assert.ok(!items.some((p) => p.id === QS), "a page is not its own backlink");
+});
+
+test("backlinks of an unknown id are empty, not everything", async () => {
+  const d = await linkFixture();
+  assert.deepEqual(d.backlinks("01ZZZZZZZZZZZZZZZZZZZZZZZZ"), { items: [], count: 0 });
+});
+
+test("orbit() resolves its link half the same way, and keeps its tag half", async () => {
+  const d = await linkFixture({
+    // The topic's tag is its own name slugged, and has nothing to do with links.
+    "notes/Tagged.md": md(P("01G1G1G1G1G1G1G1G1G1G1G1G1", { title: "Tagged", tags: ["quire-structures"], updated: TS(22) }), "no link, just the tag"),
+  });
+  const { items, tag } = d.orbit(QS);
+  assert.equal(tag, "quire-structures", "the tag half still comes from the title");
+  assert.deepEqual(items.map((p) => [p.title, p.via]), [
+    ["By Filename", "link"], ["By Alias", "link"], ["By Path", "link"],
+    ["By Id", "link"], ["Tagged", "tag"],
+  ], "newest first, and each says why it is here");
+  assert.ok(!items.some((p) => p.title === "By Title"),
+    "a dead link is not an orbit — the page says a name no file answers to");
+});
+
+test("the mention filter takes an id or a link target, and resolves both", async () => {
+  const d = await linkFixture();
+  const byId = await d.pages({ mention: QS });
+  assert.deepEqual(byId.items.map((p) => p.title).sort(),
+    ["By Alias", "By Filename", "By Id", "By Path"]);
+  // Named instead of identified: the alias and the filename are the same page,
+  // so they answer with the same set.
+  for (const name of ["Quires", "quire structures 2", "notes/Quire Structures 2.md"]) {
+    assert.deepEqual((await d.pages({ mention: name })).items.map((p) => p.title).sort(),
+      byId.items.map((p) => p.title).sort(), `mention=${name}`);
+  }
+  assert.deepEqual((await d.pages({ mention: "Quire Structures" })).items.map((p) => p.title),
+    ["By Title"], "a target no page answers to falls back to the literal string, "
+    + "which is what an asset embed is");
+});
+
 test("addBookmarks: one paste, many links, no duplicates", async () => {
   const d = await fixture();
   const r = await d.addBookmarks(

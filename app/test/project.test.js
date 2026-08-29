@@ -63,6 +63,77 @@ test("projectMembers is the folder minus its own note", async () => {
   assert.deepEqual(items.map((p) => p.kind).sort(), ["canvas", "note"]);
 });
 
+test("what is inside a project counts links, resolved as links resolve", async () => {
+  // The folder note's filename is not its title — a project called Kiln beside
+  // an existing `notes/Kiln.md` is filed as `Kiln 2` — so `[[Kiln]]` is a name
+  // nothing answers to, and `[[Firing]]` (the alias) and `[[Kiln 2]]` are the
+  // two that do. Matching on `title:` had it exactly backwards.
+  const d = await data({
+    "notes/Kiln.md": serialize({
+      id: "01KKKKKKKKKKKKKKKKKKKKKKKK", kind: "note", title: "Kiln kit",
+      created: TS, updated: TS }, "the kiln itself, not the project"),
+    "projects/Kiln 2/Kiln 2.md": serialize({
+      id: "01PPPPPPPPPPPPPPPPPPPPPPPP", kind: "note", title: "Kiln",
+      aliases: ["Firing"], created: TS, updated: TS }, "the folder note"),
+    "projects/Kiln 2/Firing Log.md": serialize({
+      id: "01LLLLLLLLLLLLLLLLLLLLLLLL", kind: "note", title: "Firing Log",
+      created: TS, updated: TS }, "cone 6"),
+    "notes/Cites Alias.md": serialize({
+      id: "01AAAAAAAAAAAAAAAAAAAAAAAA", kind: "note", title: "Cites Alias",
+      created: TS, updated: TS }, "for [[Firing]]"),
+    "notes/Cites Filename.md": serialize({
+      id: "01FFFFFFFFFFFFFFFFFFFFFFFF", kind: "note", title: "Cites Filename",
+      created: TS, updated: TS }, "for [[Kiln 2]]"),
+    "notes/Cites Title.md": serialize({
+      id: "01TTTTTTTTTTTTTTTTTTTTTTTT", kind: "note", title: "Cites Title",
+      created: TS, updated: TS }, "for [[Kiln]]"),
+  });
+  const { items } = await d.projects();
+  const kiln = items.find((p) => p.name === "Kiln 2");
+  assert.deepEqual(kiln.inside.map((p) => p.title).sort(),
+    ["Cites Alias", "Cites Filename", "Firing Log"],
+    "folder membership plus the pages that link to the note");
+  assert.equal(kiln.memberCount, 3, "the count says what the list shows");
+  assert.ok(!kiln.inside.some((p) => p.title === "Cites Title"),
+    "[[Kiln]] resolves to notes/Kiln.md, not to this project — a title match "
+    + "would have pulled a page about something else inside");
+});
+
+test("the vault catalog is not inside every project", async () => {
+  // `index` lists the whole vault, so it mentions every project. Counting that
+  // as membership put one row inside every project that was equally true of
+  // all of them. The log and the plumbing say as little.
+  const page = (id, title, body) => serialize(
+    { id, kind: "note", title, created: TS, updated: TS }, body);
+  const d = await data({
+    "index.md": page("01IIIIIIIIIIIIIIIIIIIIIIII", "index", "[[Kiln]] and [[Bindery]]"),
+    "log.md": page("01GGGGGGGGGGGGGGGGGGGGGGGG", "log", "worked on [[Kiln]] today"),
+    "tags/firing.md": page("01SSSSSSSSSSSSSSSSSSSSSSSS", "firing", "see [[Kiln]]"),
+    "CONVENTION.md": page("01CCCCCCCCCCCCCCCCCCCCCCCC", "CONVENTION", "e.g. [[Kiln]]"),
+    "raw/clipping.md": page("01RRRRRRRRRRRRRRRRRRRRRRRR", "Clipping", "about [[Kiln]]"),
+    "projects/Kiln/Kiln.md": page("01PPPPPPPPPPPPPPPPPPPPPPPP", "Kiln", "the folder note"),
+    "projects/Kiln/Firing Log.md": page("01LLLLLLLLLLLLLLLLLLLLLLLL", "Firing Log", "cone 6"),
+    // A project citing another project: kept, deliberately. isSystemEntry would
+    // drop this row and still leave index.md in — wrong twice.
+    "projects/Bindery/Bindery.md": page("01BBBBBBBBBBBBBBBBBBBBBBBB", "Bindery", "fires at [[Kiln]]"),
+    "notes/Real Note.md": page("01NNNNNNNNNNNNNNNNNNNNNNNN", "Real Note", "booked [[Kiln]]"),
+  });
+  const { items } = await d.projects();
+  const kiln = items.find((p) => p.name === "Kiln");
+  assert.deepEqual(kiln.inside.map((p) => p.title).sort(),
+    ["Bindery", "Firing Log", "Real Note"],
+    "folder members, a real note, and the project that cites this one");
+  assert.equal(kiln.memberCount, 3);
+  for (const noise of ["index", "log", "firing", "CONVENTION", "Clipping"]) {
+    assert.ok(!kiln.inside.some((p) => p.title === noise),
+      `${noise} mentions every project, so it is evidence about none of them`);
+  }
+  // The catalog names Bindery too, and is inside that one no more than this.
+  const bindery = items.find((p) => p.name === "Bindery");
+  assert.deepEqual(bindery.inside.map((p) => p.title), [],
+    "nothing but the catalog links to Bindery, so nothing is inside it");
+});
+
 test("two quick untitled creates do not overwrite each other", async () => {
   const d = await data();
   const a = await d.createPage({ kind: "note", project: "Rebrand" });
