@@ -103,6 +103,17 @@ What the code needs to know:
     `cleanScene` in [app/vault/excalidraw.js](app/vault/excalidraw.js).
   - **Inspo is not a canvas.** It shares CSS class names and nothing else: a
     bento wall whose order lives in the markdown body, with no geometry at all.
+- **A structural body section is composed below the escape, never through it.**
+  `Vault.put` runs `escapeUser` over the body, which backslashes any of
+  CONVENTION's five headings in it — that is what keeps a user's typed
+  `## Attachments` from forging a section. So the two halves travel separately:
+  `Vault.get` hands back `body` (the prose, unescaped) and `sections` (verbatim,
+  still escaped), and `put` takes them the same way and appends the second below
+  the escape. **Omitting `sections` on a write PRESERVES what is on disk** —
+  retitle, re-id and every other writer that has never heard of a tray would
+  otherwise be a way to lose one. The tray itself cannot live in frontmatter:
+  FIELD_ORDER has no key for it, `serialize()` throws on an unknown one, and it
+  emits only scalars and scalar arrays.
 - `CONVENTION_VERSION` in `app/vault/scaffold.js` is written to `.canon-vault`
   in every new vault. A breaking format change bumps it and needs a story for
   reading the old form.
@@ -119,6 +130,8 @@ app/                 the whole product — no framework, no bundler, no build st
   styles.css         the design system — light-first, two ramps flip per theme (DESIGN.md)
   vault/             the data layer — everything below is testable in Node
     mdfile.js        the file format contract: frontmatter + body, serialize/parse
+    sections.js      the five structural body headings, BELOW the escape
+    attachments.js   what `## Attachments` holds: the topic page's tray
     vault.js         the data interface over two backends (File System Access, memory)
     data.js          what the old REST endpoints computed, done locally
     links.js         wikilink resolution

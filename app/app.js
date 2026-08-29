@@ -3346,6 +3346,32 @@ function V2PageView(pageId, onChange, onDeleted) {
     return { path: j.path, url: j.url };
   }
 
+  /* The structural sections this app carries but does not edit.
+
+     CONVENTION reserves five body headings. `## Attachments` has a surface —
+     the tray on a topic — and the other four do not: `## Thread` came out of
+     the chat this app no longer has. They used to arrive inside `page.body`
+     and go back out through `escapeUser`, which treats a body as user prose
+     and backslashed every one of those headings, so a real section was unmade
+     by the first save that touched the page. They are kept verbatim on disk
+     now (see vault.js `put`), which leaves the question of whether to show
+     them — and a section the app silently hides is a section nobody can tell
+     survived. Read-only, because there is nothing here that could save an
+     edit to one. */
+  function renderCarriedSections() {
+    if (!page || !page.sections) return null;
+    const el = h('div', { className: 'page-carried md-rendered' });
+    try {
+      // The same path the prose takes, so a `[[wikilink]]` in a `## Links`
+      // section resolves here exactly as it does three inches above it.
+      el.appendChild(h('div', { html: SB.data().renderHtml(page.sections).html }));
+      getPageIndex().then(() => { decorateMentions(el); decorateHashtags(el); }).catch(() => {});
+    } catch (e) {
+      el.appendChild(h('pre', { className: 'page-carried-raw' }, page.sections));
+    }
+    return el;
+  }
+
   // ── Body renderers ────────────────────────────────────────────────────
   function renderDefaultBody() {
     return h('div', { className: 'page-body' },
@@ -5410,6 +5436,8 @@ function V2PageView(pageId, onChange, onDeleted) {
             const r = await SB.data().readSnapshot(pick.path);
             if (!r || !r.ok) { toast('Could not read that version', { tone: 'error' }); return; }
             page.body = r.body != null ? r.body : r.text;
+            // The version's reference material too — see Data.readSnapshot.
+            if (page.meta && Array.isArray(r.attachments)) page.meta.attachments = r.attachments;
             queueSave();
             layout();
             toast('Restored the version from ' + pick.stamp);
@@ -5748,7 +5776,7 @@ function V2PageView(pageId, onChange, onDeleted) {
       className: 'page-grid' + (side ? '' : ' no-chat') + extraClass,
       style: { '--k-c': m.color },
     },
-      h('div', { className: 'page-main' }, header, body),
+      h('div', { className: 'page-main' }, header, body, renderCarriedSections()),
       side)); // right column
   };
 

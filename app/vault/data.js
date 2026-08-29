@@ -23,6 +23,8 @@ import { isExcalidrawPath, parseExcalidraw, serializeExcalidraw,
 import { clipFrontmatter, urlsFromText, findByUrl, titleFromUrl } from "./clip.js";
 import { parse, unescapeUser } from "./mdfile.js";
 import { basenameOf, resolveWikilink, linkResolver } from "./links.js";
+import { readAttachments, writeAttachments } from "./attachments.js";
+import { setSection } from "./sections.js";
 
 const DEFAULT_LIMIT = 200;
 
@@ -524,7 +526,10 @@ export class Data {
     for (const e of this.v.list()) {
       if (hits.length >= limit) break;
       const p = await this.v.get(e.id);
-      if (p && String(p.body || "").toLowerCase().includes(n)) hits.push(pageOut(e));
+      // Body AND sections: an attachment is reference material, and material
+      // you cannot search is material you have to remember you filed.
+      const hay = `${(p && p.body) || ""}\n${(p && p.sections) || ""}`.toLowerCase();
+      if (p && hay.includes(n)) hits.push(pageOut(e));
     }
     return { items: hits, count: hits.length };
   }
@@ -533,6 +538,22 @@ export class Data {
     const p = await this.v.get(id);
     if (!p) return null;
     const out = pageOut(p, p.body ?? "");
+    /* The attachments tray, read back out of `## Attachments`.
+       It has to be surfaced here or the topic page opens empty however much
+       the file carries — the mirror image of the write side, and the half
+       that was missing when the tray "saved" and then reverted on reload. */
+    const attachments = readAttachments(p.sections);
+    if (attachments.length) out.meta = { ...out.meta, attachments };
+    /* The other four structural sections, carried rather than edited.
+       `## Attachments` has a surface — the tray above. `## Thread`,
+       `## Links`, `## Mentions` and `## Board contents` do not: the thread
+       came out of the chat this app no longer has. They used to arrive inside
+       `body` and go back through `escapeUser`, which turned every real
+       heading into `\## Thread` and unmade the section on the first save.
+       They stay verbatim on disk now, and are surfaced here so the page can
+       show what it is holding instead of hiding it. */
+    const carried = unescapeUser(setSection(p.sections ?? "", "Attachments", ""));
+    if (carried) out.sections = carried;
     // Nodes, but no edges: nothing draws a board any more. The flat item list
     // survives for one caller only — the "import the old board" button on an
     // inspo wall that still has a `.canvas` sidecar.
@@ -1010,15 +1031,35 @@ export class Data {
        the ordinary save path wrote that half over the whole: touch a tag or a
        link chip on a board and the `## Drawing` block went with it. The scene
        is spliced back rather than re-serialized, so a save that never touched
-       an element does not rewrite the compressed payload either. */
+       an element does not rewrite the compressed payload either.
+
+       This survives the section split rather than duplicating it: `put()`
+       exempts a `.excalidraw.md` from splitting (see `splitsSections`), so the
+       board's body still arrives here whole and the splice is still the thing
+       that keeps it whole. */
     let nextBody = "body" in patch ? patch.body : cur.body;
     if ("body" in patch && isExcalidrawPath(cur.path)
         && !hasExcalidrawData(patch.body) && hasExcalidrawData(cur.body)) {
       nextBody = withBackOfNote(cur.body, patch.body);
     }
+    /* The tray → `## Attachments`. It cannot go into frontmatter: FIELD_ORDER
+       has no key for it, `serialize()` throws on an unknown one, and an
+       attachment is a nested object with a body of prose in it — the one shape
+       YAML frontmatter here can never hold. So it goes to the body section
+       CONVENTION reserves for it, composed below the escape (see put()).
+
+       Absent from the patch means UNCHANGED, not empty: the editor sends the
+       whole `page.meta` on every save, but a rename, a restore or a save from
+       a screen that has never heard of attachments sends none, and those must
+       not quietly empty the tray. An empty array IS a clear — that is what
+       removing the last card looks like. */
+    const sections = patch.meta && Array.isArray(patch.meta.attachments)
+      ? writeAttachments(cur.sections ?? "", patch.meta.attachments)
+      : (cur.sections ?? "");
     const r = await this.v.put({
       id, path: cur.path, frontmatter: fm,
       body: nextBody,
+      sections,
       force: patch.force,
     });
     if (!r.ok) return r;
@@ -1238,7 +1279,18 @@ export class Data {
 
   /* Snapshots of a page, newest first, from `.history/`. */
   async pageHistory(id) { return this.v.history(id); }
-  async readSnapshot(path) { return this.v.readHistory(path); }
+  /**
+   * A `.history/` snapshot, in the shape the editor restores from.
+   *
+   * `attachments` rides along because a restore that brought back the prose and
+   * left the tray on whatever the live page happened to hold would be restoring
+   * half a version — and the half it dropped is the half nobody would notice
+   * until they went looking for the material.
+   */
+  async readSnapshot(path) {
+    const r = await this.v.readHistory(path);
+    return r && r.ok ? { ...r, attachments: readAttachments(r.sections) } : r;
+  }
 
   /* Put back what deletePage() just trashed. Takes its return value. */
   async restorePage(receipt) {

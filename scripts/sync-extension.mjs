@@ -33,6 +33,7 @@ export const EXT_DIR = join(ROOT, "extension");
  * does not ask.
  */
 export const MIRRORED = [
+  ["app/vault/attachments.js", "extension/vault/attachments.js"],
   ["app/vault/clip.js", "extension/vault/clip.js"],
   ["app/vault/dashboard.js", "extension/vault/dashboard.js"],
   ["app/vault/data.js", "extension/vault/data.js"],
@@ -41,6 +42,7 @@ export const MIRRORED = [
   ["app/vault/inspo.js", "extension/vault/inspo.js"],
   ["app/vault/links.js", "extension/vault/links.js"],
   ["app/vault/mdfile.js", "extension/vault/mdfile.js"],
+  ["app/vault/sections.js", "extension/vault/sections.js"],
   ["app/vault/vault.js", "extension/vault/vault.js"],
   // excalidraw.js imports it. The clipper never writes a drawing, but data.js
   // does not know that, and a mirror with a missing import is a broken mirror.

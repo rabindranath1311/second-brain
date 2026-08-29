@@ -365,9 +365,13 @@ test("list results are marked as carrying an excerpt, not a full body", async ()
     "and the full body must actually be longer than the excerpt");
 });
 
-test("a body longer than the excerpt keeps its section headings", async () => {
+test("a body longer than the excerpt still carries its structural sections", async () => {
   // The excerpt is whitespace-collapsed, so a '## Thread' inside it stops being
   // a heading. This is what made long threads vanish from the page view.
+  //
+  // They no longer arrive inside `body`: a structural section is not prose, and
+  // a body is what `escapeUser` backslashes. `page()` surfaces them separately
+  // — which is what a page renders — and they must still be there.
   const long = "Intro paragraph.\n\n" + "filler ".repeat(60) + "\n\n## Thread\n\n**user** 2026-01-01\nhi";
   const be = new MemoryBackend({
     "topics/T.md": md(P("01TTTTTTTTTTTTTTTTTTTTTTTT", { kind: "topic", title: "T" }), long),
@@ -378,7 +382,9 @@ test("a body longer than the excerpt keeps its section headings", async () => {
   const listed = (await d.pages({})).items[0];
   const full = await d.page("01TTTTTTTTTTTTTTTTTTTTTTTT");
   assert.ok(!/^## Thread$/m.test(listed.body), "the excerpt cannot carry the heading");
-  assert.match(full.body, /^## Thread$/m, "the full body must");
+  assert.ok(!/^## Thread$/m.test(full.body), "nor is a section part of the prose");
+  assert.match(full.sections, /^## Thread$/m, "the page must still carry the section");
+  assert.match(full.sections, /^\*\*user\*\* 2026-01-01$/m, "and everything under it");
 });
 
 // ── Boards must reach the view ───────────────────────────────────────────

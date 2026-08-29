@@ -6400,6 +6400,27 @@ body:has(.sb-vault-banner) .cv-toast { bottom: calc(var(--banner-h) + var(--sp-3
 /* Truncation is fine; silent truncation is not. The project card clamps its
    description to two lines, so the full text goes in the title. */
 
+/* ─── Carried sections ─────────────────────────────────────────────────
+   CONVENTION's structural body sections that this app keeps but does not
+   edit — `## Thread` and the rest. Read-only, and dressed to say so: below a
+   rule, in the quieter of the two text ramps, never as a field you could type
+   in. Anything else would be offering an edit nothing here can save. */
+.page-carried {
+  flex: 0 0 auto;
+  margin-top: var(--sp-5);
+  padding-top: var(--sp-4);
+  border-top: 1px solid var(--line-soft);
+  color: var(--muted);
+}
+.page-carried h1, .page-carried h2, .page-carried h3 { color: var(--fg); }
+/* `.page-body` is `flex: 1`, and `flex: 1` is `1 1 0%` — a zero basis that
+   only ever grows into the space left over. That is right while it is the
+   only thing in the column and wrong the moment it has a sibling: the body
+   collapsed to a fifth of its own content and clipped the orbit and the
+   attachments tray off the bottom of it. Content-sized, growing but never
+   shrinking, and `.page-main` scrolls as it always did. */
+.page-main:has(> .page-carried) > .page-body { flex: 1 0 auto; }
+
 /* A board preview tile was overflowing its card by a few pixels. */
 .board-card-preview { min-width: 0; }
 .board-card-mini { min-width: 0; overflow: hidden; }

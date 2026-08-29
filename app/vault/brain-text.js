@@ -191,6 +191,31 @@ or with \`**user** \` / \`**assistant** \` — prefix the line with a backslash 
 cannot forge a section boundary. Only those lines. Your own \`## Design notes\`
 is ordinary prose and is left alone.
 
+That backslash is the whole difference between structure and prose, so it
+decides where a client may compose one: **a section is written below the
+escape, never through it.** Escape the prose, then append the sections — a
+client that builds \`## Attachments\` into the body and escapes the result has
+just written \`\\## Attachments\` and unmade the section it meant to create.
+Sections sort in the order listed above, and they come after the prose: once
+one starts, the rest of the body is structure.
+
+**An attachment**, inside \`## Attachments\`, is one \`###\` block:
+
+\`\`\`markdown
+### Some article (link)
+Source: https://example.com
+
+why it matters
+\`\`\`
+
+The parenthesis is the source label — \`text\`, \`markdown\`, \`link\`, or which
+assistant a conversation was exported from. \`Source:\` is the URL, and only on
+the line directly beneath the heading; one blank line down it is the
+attachment's own first sentence. A URL is http(s) or it is dropped, as
+everywhere else. Everything after the blank line is the material, escaped
+**strictly** — \`###\` included, because a pasted conversation is full of them
+and one of them would otherwise start the next attachment.
+
 ## Canvas
 
 \`kind: canvas\` means a **board**: a single \`canvas/sketch.excalidraw.md\`, no

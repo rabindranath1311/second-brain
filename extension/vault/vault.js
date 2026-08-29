@@ -7,8 +7,18 @@
 // under `node --test` with no browser and no npm install (task 5.11).
 
 import { serialize, parse, escapeUser, unescapeUser, REQUIRED } from "./mdfile.js";
+import { splitSections, joinBody } from "./sections.js";
 import { isExcalidrawPath, stripExcalidrawData, textOfExcalidraw } from "./excalidraw.js";
 import { basenameOf } from "./links.js";
+
+/* Whose body is it.
+   A `.excalidraw.md` is one blob in the Obsidian plugin's own format: the `%%`
+   drawing block, the `## Text Elements` index regenerated on every write, and
+   the back-of-note above them. It is written and read as a whole, and pulling
+   a `## Board contents` out of the middle of it would hand the board's own
+   text back twice — once inside the body the editor re-serializes, once as a
+   section beside it. Everything else is prose plus sections. */
+const splitsSections = (path) => !isExcalidrawPath(path);
 
 export const IGNORED_DIRS = [".git", ".obsidian", ".trash", ".history"];
 export const KIND_BY_FOLDER = {
@@ -635,7 +645,11 @@ export class Vault {
         tags: [...new Set([...fmTags, ...extractInlineTags(body)])],
         aliases: Array.isArray(fm.aliases) ? fm.aliases : fm.aliases ? [fm.aliases] : [],
         mentions: [...new Set([...String(body).matchAll(/!?\[\[([^\]|#]+)/g)].map((m) => m[1].trim()))],
-        excerpt: excerptOf(unescapeUser(isExcalidraw ? stripExcalidrawData(body) : body)),
+        // The prose only. An excerpt is what a list row shows, and a topic
+        // whose description is short would otherwise be described by whatever
+        // was pasted into its attachments tray.
+        excerpt: excerptOf(unescapeUser(
+          isExcalidraw ? stripExcalidrawData(body) : splitSections(body).prose)),
         // The drawing's own words, kept OUT of the excerpt on purpose: the
         // excerpt is what a list row shows, and a row reading "Fold Gather Sew"
         // describes the picture rather than the page. Searchable, not visible.
@@ -754,7 +768,15 @@ export class Vault {
     const sibling = e.path.endsWith(".md") ? e.path.replace(/\.md$/, ".canvas") : null;
     const canvas = sibling && await this.be.exists(sibling)
       ? await this.be.readText(sibling) : null;
-    return { ...e, frontmatter: fm, body: unescapeUser(body), raw: text,
+    // CONVENTION's five structural headings are not prose, so they are not
+    // `body`: a caller that reads a page and writes it back — retitle, re-id,
+    // restore — would otherwise hand the section text to `put()` as user
+    // content and watch the escape backslash every heading in it. The prose
+    // comes out unescaped as it always did; `sections` stays exactly as the
+    // file has it, because that is the form every reader of it expects.
+    const split = splitsSections(e.path) ? splitSections(body) : { prose: body, sections: "" };
+    return { ...e, frontmatter: fm, body: unescapeUser(split.prose),
+             sections: split.sections, raw: text,
              ...(canvas !== null && { canvas }) };
   }
 
@@ -867,7 +889,23 @@ export class Vault {
     if (!fm.title) fm.title = page.title || path.split("/").pop().replace(/\.md$/, "");
     fm.updated = this.now();
 
-    const text = serialize(fm, escapeUser(page.body ?? ""));
+    /* The seam the structural sections need.
+       `escapeUser` treats the body as user prose and backslashes any of
+       CONVENTION's five headings in it — which is right, and is exactly why a
+       section cannot be composed above this line. So the caller passes it
+       separately and it is appended verbatim, already escaped where its own
+       content needed escaping (see attachments.js).
+
+       Omitting `sections` PRESERVES what is on disk. Most writers here —
+       retitle, re-id, createTag — have no idea a page has an attachments tray,
+       and a default of "drop it" would make every one of them a way to lose
+       one. Passing `""` is how a caller says it means to clear them. */
+    let sections = page.sections;
+    if (sections === undefined) {
+      sections = onDisk && splitsSections(path)
+        ? splitSections(parse(await this.be.readText(path))[1]).sections : "";
+    }
+    const text = serialize(fm, joinBody(escapeUser(page.body ?? ""), sections));
     try {
       await this.be.writeText(path, text);
     } catch (e) {
@@ -1007,8 +1045,16 @@ export class Vault {
       // parse() returns a TUPLE [frontmatter, body], not an object — reading
       // `.body` off it silently yielded undefined and the restore would have
       // written the whole file, frontmatter and all, into the page body.
-      const [frontmatter, body] = parse(text);
-      return { ok: true, text, body, frontmatter };
+      const [frontmatter, raw] = parse(text);
+      // Split and unescape exactly as `get()` does. Restoring used to paste
+      // the snapshot's escaped body straight back into the page — a version
+      // with an attachments tray came back as `\## Attachments` in the prose,
+      // and the tray itself did not come back at all.
+      // A snapshot is named by stamp, not by extension, so the board case is
+      // read from the marker CONVENTION gives it rather than from the path.
+      const { prose, sections } = frontmatter["excalidraw-plugin"] != null
+        ? { prose: raw, sections: "" } : splitSections(raw);
+      return { ok: true, text, body: unescapeUser(prose), sections, frontmatter };
     } catch (e) {
       return { ok: false, reason: "unreadable", message: String(e.message || e) };
     }

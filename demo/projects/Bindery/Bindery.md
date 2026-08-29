@@ -14,10 +14,10 @@ this is the folder note.
 **Where it is:** twelve blocks sewn, none cased in. The endpaper choice is the
 thing blocking the rest.
 
+Subjects: [[bookbinding]]
+
 ## Links
 
 - [[Quire Structures]] — the structural thinking
 - [[Endpapers]] — the palette shortlist
 - [[Folio Gathering Notes]] — gathering notes for this run
-
-Subjects: [[bookbinding]]
