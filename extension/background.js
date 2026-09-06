@@ -83,11 +83,19 @@ async function paintBadge(flash = null) {
   const handle = await storedHandle();
   const state = await permission(handle);
   const ready = state === "granted";
+  /* A capture the form never got to ask about. It is not in the queue — nothing
+     will be written until somebody chooses a destination — so the count above
+     cannot speak for it, and without its own mark the capture would sit there
+     invisibly. */
+  const asking = Boolean(await getMeta(PENDING_KEY));
 
-  await chrome.action.setBadgeBackgroundColor({ color: "#d97706" });
-  await chrome.action.setBadgeText({ text: n ? String(n) : (ready ? "" : "•") });
+  await chrome.action.setBadgeBackgroundColor({ color: asking ? "#2563eb" : "#d97706" });
+  await chrome.action.setBadgeText({
+    text: asking ? "?" : n ? String(n) : (ready ? "" : "•"),
+  });
   await chrome.action.setTitle({
-    title: !handle ? "Canon Clip — no vault connected yet"
+    title: asking ? "Canon Clip — click to choose where this goes"
+      : !handle ? "Canon Clip — no vault connected yet"
       : !ready ? `Canon Clip — ${handle.name} is locked, click to unlock`
       : n ? `Canon Clip — ${n} waiting for ${handle.name}`
       : `Canon Clip — writing to ${handle.name}`,
@@ -383,15 +391,32 @@ async function clipShot(tab, { region = false, target = "wall" } = {}, fields = 
  * menu item that silently does nothing is worse than one that saves without
  * asking.
  */
-async function openForm(pending) {
-  await setMeta(PENDING_KEY, pending);
-  if (!chrome.action.openPopup) return false;
-  try {
-    await chrome.action.openPopup();
-    return true;
-  } catch {
-    return false;
-  }
+/* The write that is putting `pending` on disk, so `takePending` can wait for it
+   without `openForm` having to await it first. See below for why that matters. */
+let pendingWrite = Promise.resolve();
+
+/**
+ * Put the capture in waiting and open the form over it.
+ *
+ * `chrome.action.openPopup()` must be called INSIDE the user gesture that a
+ * context-menu click or a keyboard command gives us, and an MV3 service worker
+ * loses that activation the moment it awaits anything at all. `await setMeta()`
+ * first — a single IndexedDB write — was enough to lose it: `openPopup()` threw
+ * "not called from a user gesture", the catch swallowed it, and the caller fell
+ * through to saving with a guessed destination. Every "Save image…" and "Save
+ * selection…" wrote a file without asking, which is the one thing the ellipsis
+ * in those labels promises it will not do.
+ *
+ * So the write is STARTED and deliberately not awaited, and the popup waits for
+ * it instead.
+ */
+function openForm(pending) {
+  pendingWrite = setMeta(PENDING_KEY, pending);
+  if (!chrome.action.openPopup) return pendingWrite.then(() => false);
+  return chrome.action.openPopup().then(
+    () => true,
+    () => pendingWrite.then(() => false),
+  );
 }
 
 chrome.contextMenus.onClicked.addListener(async (info, tab) => {
@@ -410,22 +435,44 @@ chrome.contextMenus.onClicked.addListener(async (info, tab) => {
       at: Date.now(),
     });
     if (opened) return;                       // the popup takes it from here
-    await setMeta(PENDING_KEY, null);
-    if (info.menuItemId === "clip-page") await clipPage(tab);
-    else if (info.menuItemId === "clip-region") await clipShot(tab, { region: true });
-    else if (info.menuItemId === "clip-image") await clipImage(tab, info.srcUrl);
-    else if (info.menuItemId === "clip-link") await clipLink(tab, info.linkUrl);
-    else if (info.menuItemId === "clip-selection") await clipSelection(tab, info.selectionText);
+    /* The form could not open — an older Chrome, a policy, a lost gesture.
+       The capture STAYS in waiting rather than being written to a destination
+       nobody chose. It used to fall through to `clipImage`/`clipSelection`
+       here, which silently guessed `inspo` for a picture and `notes/` for a
+       quote; a clipper that saves somewhere you did not pick is worse than one
+       that waits, because you do not find out until you go looking. The badge
+       says there is something to finish, and clicking the icon opens the form
+       with this capture already in it. */
+    await pendingWrite;
+    await paintBadge();
   } catch (e) {
     await paintBadge("bad");
     console.error("Canon Clip:", e);
   }
 });
 
+/* The shortcuts ask too. They used to go straight to `clipPage`/`clipShot`,
+   so Alt+Shift+C filed a bookmark and Alt+Shift+S filed a picture to a wall
+   without a word — the same silent guess the menus made, on the path where it
+   is least expected, because a keystroke gives you no menu label to read
+   first. A command is a user gesture, so the form opens from here as well. */
 chrome.commands.onCommand.addListener(async (command, tab) => {
   if (!tab) return;
-  if (command === "clip-page") await clipPage(tab);
-  if (command === "clip-region") await clipShot(tab, { region: true });
+  const dest = MENU_DEST[command];
+  if (!dest) return;
+  try {
+    const opened = await openForm({
+      dest, picture: command === "clip-region" ? "region" : "none",
+      tabId: tab.id, imageSrc: null, url: null,
+      selection: "", highlight: false, at: Date.now(),
+    });
+    if (opened) return;
+    await pendingWrite;
+    await paintBadge();
+  } catch (e) {
+    await paintBadge("bad");
+    console.error("Canon Clip:", e);
+  }
 });
 
 // ── what the popup and the setup page ask for ───────────────────────────────
@@ -454,8 +501,13 @@ const HANDLERS = {
   /** What a right-click left for the popup, taken rather than read: a pending
    *  capture is for the next popup that opens, not for every one after it. */
   takePending: async () => {
+    // `openForm` starts this write without awaiting it, so that opening the
+    // popup still counts as happening inside the user's click. The popup asks
+    // for the capture within milliseconds, so waiting for the write here is
+    // what keeps the two in order.
+    await pendingWrite;
     const pending = await getMeta(PENDING_KEY);
-    if (pending) await setMeta(PENDING_KEY, null);
+    if (pending) { await setMeta(PENDING_KEY, null); await paintBadge(); }
     return { ok: true, pending: pending || null };
   },
   flush: () => flush(),
