@@ -409,7 +409,7 @@ body {
   padding: 0 16px; font-size: var(--fz-mini); color: var(--muted);
   border: 0;       /* per UI tweak: no border around the crumb row */
 }
-.app.app-tabs .crumb-row .sep { color: var(--faint)); margin: 0 2px; }
+.app.app-tabs .crumb-row .sep { color: var(--faint); margin: 0 2px; }
 .app.app-tabs .crumb-row .crumb-link { color: var(--muted); text-decoration: none; }
 .app.app-tabs .crumb-row .crumb-link:hover { color: var(--fg); }
 .app.app-tabs .crumb-row b { color: var(--fg); font-weight: 500; }
@@ -564,7 +564,7 @@ body {
   display: inline-block; width: 6px; height: 6px; border-radius: 50%;
   background: var(--signal-pos);
 }
-.app.app-tabs .nav-status-sync { color: var(--faint)); font-size: var(--fz-micro); }
+.app.app-tabs .nav-status-sync { color: var(--faint); font-size: var(--fz-micro); }
 .app.app-tabs .nav-gear {
   margin-top: 4px;
   background: none; border: 0; color: var(--muted);  /* no stroke per UI tweak */
@@ -1225,6 +1225,13 @@ body.col-resizing * { cursor: col-resize !important; user-select: none !importan
 .pages-row .row-g { flex: none; display: inline-flex; padding-top: 1px; }
 .pages-row .row-g .lucide { width: 15px; height: 15px; }
 .pages-row .row-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+/* The title line. The facet chip rides beside the title rather than in a
+   column of its own — the column was removed for good reason, and this is
+   not it coming back: it appears only on the rows the screen's own heading
+   does not cover. See ListView_Table. */
+.pages-row .row-hd { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.pages-row .row-hd .row-t { min-width: 0; }
+.pages-row .row-k { flex: none; opacity: .9; }
 .pages-row .row-t {
   font-size: var(--fz-body); font-weight: 550; color: var(--fg);
   letter-spacing: var(--track-title);
@@ -1253,7 +1260,7 @@ body.col-resizing * { cursor: col-resize !important; user-select: none !importan
   background: var(--paper-2);
 }
 .pages-row {
-  border-bottom: 1px dashed var(--line-very-soft));
+  border-bottom: 1px dashed var(--line-very-soft);
   cursor: default;
 }
 .pages-row:last-child { border-bottom: 0; }
@@ -3511,7 +3518,7 @@ a.set-dl { display: inline-flex; align-items: center; text-decoration: none; }
   padding: 6px;
   margin: 0 0 6px;
   background: var(--bg2, rgba(127,127,127,0.06));
-  border: 1px solid var(--border));
+  border: 1px solid var(--border);
   border-radius: 10px;
 }
 .mode-btn {
@@ -4197,6 +4204,10 @@ code, pre, kbd, samp {
      button; and a delete control on every one turns a row of labels into a
      row of things to be careful around. Pill, sans, and the × only when the
      pointer is on the chip that owns it. — */
+/* A link this app carries but cannot edit — it lives in a `## Links` section,
+   which reaches disk verbatim. No × on it, so the pill is quieter by a hair
+   than the ones you can take off; the reason is in its tooltip. */
+.mention-chip.carried { border-style: dashed; }
 .tag, .tag-chip, .mention-chip, .kind-chip {
   border-radius: var(--radius-pill);
   padding: 4px 12px 4px 9px;
@@ -5930,6 +5941,10 @@ body.cv-settled .screen, body.cv-settled .page {
 .pk-row-create .pk-row-g { color: var(--accent); }
 .pk-row-create .pk-row-l { color: var(--accent); }
 .pk-empty { padding: 12px 10px; font-size: var(--fz-mini); color: var(--faint); }
+/* A row that is in the list to answer a question, not to be picked — an
+   already-linked page. Dimmed, never highlighted, inert to the pointer. */
+.pk-row-off { opacity: 0.45; cursor: default; }
+.pk-row-off:hover { background: transparent; }
 .pk-hint {
   flex: none; padding: 6px 11px;
   border-top: 1px solid var(--line-soft);

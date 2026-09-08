@@ -749,13 +749,15 @@ function resolveMention(mn) {
   const raw = String(mn || '');
   const idx = _pageIndexCache || {};
   const byId = idx[raw];
-  if (byId) return { label: byId.title, id: raw, kind: byId.kind };
+  if (byId) return { label: byId.title, id: raw, kind: byId.kind, path: byId.path, url: byId.url };
   // Not an id: a title or a path. Show the last segment without its
   // extension, which is what the link would have been written as.
   const stem = raw.split('/').pop().replace(/\.(md|canvas)$/i, '');
   const hit = Object.entries(idx)
     .find(([, v]) => String(v.title).toLowerCase() === stem.toLowerCase());
-  return { label: stem, id: hit ? hit[0] : null, kind: hit ? hit[1].kind : null };
+  const v = hit ? hit[1] : null;
+  return { label: stem, id: hit ? hit[0] : null, kind: v ? v.kind : null,
+           path: v ? v.path : null, url: v ? v.url : null };
 }
 
 /* ── A mention is a wikilink in the body ────────────────────────────────────
@@ -771,15 +773,32 @@ function resolveMention(mn) {
  *  `bridge.js` publishes it on `window` and the order there is its business. */
 const _links = () => window.SB_LINKS;
 
+/* One mention, compared.
+   A mention reaches us in three shapes — a title, a vault path, or (from an
+   older build of the picker) an id — while the text between the brackets only
+   ever holds the name. Everything that asks "is this page already linked?"
+   has to normalise the same way or it answers no to a link that is right
+   there, so the comparison lives in one place. */
+function normMention(v) {
+  return String(v || '').split('/').pop()
+    .replace(/\.(md|canvas)$/i, '').trim().toLowerCase();
+}
+
 /* A mention chip: the same pill as a tag, wearing its target's kind instead
    of a hue. The two were different shapes in different fonts — a mono box
    with a permanent × beside a sans pill — which made one row of links read
    as two kinds of thing. */
 function MentionChip(mn, opts = {}) {
-  const { onClick = null, onRemove = null } = opts;
+  const { onClick = null, onRemove = null, note = null } = opts;
   const t = resolveMention(mn);
-  const m = t.kind ? (KIND_META[t.kind] || {}) : {};
-  const chip = h('span', { className: 'mention-chip' + (onRemove ? ' rm' : ''), title: String(mn) },
+  /* metaForPage, not KIND_META[t.kind] — the stored kind is not the facet.
+     An unresolved link keeps the neutral link glyph rather than borrowing
+     note chrome for a page that may not exist. */
+  const m = t.kind ? (metaForPage(t) || {}) : {};
+  const chip = h('span', {
+    className: 'mention-chip' + (onRemove ? ' rm' : '') + (note ? ' carried' : ''),
+    title: note ? String(mn) + ' — ' + note : String(mn),
+  },
     h('span', { className: 'mention-chip-i', style: m.color ? { color: m.color } : null },
       icon(m.icon || 'link-2')),
     h('span', { className: 'mention-chip-t' }, t.label));
@@ -851,11 +870,31 @@ async function searchMentions(q, exclude) {
    person using it the two are the same gesture aimed at different things.
 
    Returns a close() so a caller can dismiss it (the expanded card does). */
+/* The popover is anchored to a button that its own `onPick` destroys.
+   Every picker here is `multi` — pick, pick, pick, escape — and every onPick
+   ends in `layout()`, which rebuilds the whole header. So from the second
+   pick onward `anchor` was a DETACHED node, `getBoundingClientRect()` on one
+   is all zeros, and `place()` dutifully parked the panel at the top-left
+   corner of the window, over the sidebar, pointing at nothing. Adding one tag
+   or one link worked; adding two looked like the app had come apart.
+
+   So the anchor is re-found rather than held: `chipAdd` stamps a stable key
+   on the button, and the rebuilt button carries the same one. If it cannot be
+   found at all the panel keeps the position it had — anywhere is better than
+   the corner. */
 function openPicker(anchor, opts) {
   const {
     placeholder = 'Search…', search, onPick, onCreate = null,
     createLabel = (t) => `Create “${t}”`, hint = null, multi = true,
   } = opts;
+  const anchorKey = (anchor && anchor.getAttribute && anchor.getAttribute('data-chip-add')) || null;
+  let anchorEl = anchor;
+  const liveAnchor = () => {
+    if (anchorEl && anchorEl.isConnected) return anchorEl;
+    const next = anchorKey && document.querySelector('[data-chip-add="' + anchorKey + '"]');
+    if (next) { anchorEl = next; return next; }
+    return null;
+  };
 
   document.querySelectorAll('.pk-pop').forEach((n) => n.__close && n.__close());
 
@@ -886,7 +925,9 @@ function openPicker(anchor, opts) {
      nudged back inside the viewport horizontally. Fixed-position so it is
      not clipped by the `overflow: hidden` on .page-main. */
   function place() {
-    const r = anchor.getBoundingClientRect();
+    const el = liveAnchor();
+    if (!el) return;              // rebuilt out from under us — stay put
+    const r = el.getBoundingClientRect();
     const w = 260, maxH = 320;
     let left = Math.min(r.left, window.innerWidth - w - 12);
     left = Math.max(12, left);
@@ -903,6 +944,19 @@ function openPicker(anchor, opts) {
       pop.style.maxHeight = Math.min(maxH, below - 16) + 'px';
     }
   }
+
+  /* The first row that can actually be chosen. A picker whose top row is a
+     greyed "linked" entry must not arm Enter with it. */
+  const pickable = (i) => !!rows[i] && !(rows[i].row && rows[i].row.disabled);
+  const firstPickable = () => { for (let i = 0; i < rows.length; i++) if (pickable(i)) return i; return -1; };
+  const stepHi = (d) => {
+    if (!rows.length) return;
+    let i = hi < 0 ? (d > 0 ? -1 : 0) : hi;
+    for (let k = 0; k < rows.length; k++) {
+      i = (i + d + rows.length) % rows.length;
+      if (pickable(i)) { hi = i; paintHi(); return; }
+    }
+  };
 
   function paintHi() {
     [...list.children].forEach((el, i) => {
@@ -923,7 +977,7 @@ function openPicker(anchor, opts) {
     if (onCreate && q && !items.some((i) => String(i.label).toLowerCase() === q.toLowerCase())) {
       rows.push({ kind: 'create', text: q });
     }
-    hi = rows.length ? 0 : -1;
+    hi = firstPickable();
     clear(list);
     if (!rows.length) {
       list.appendChild(h('div', { className: 'pk-empty' },
@@ -935,7 +989,8 @@ function openPicker(anchor, opts) {
         ? h('div', { className: 'pk-row pk-row-create', role: 'option' },
             h('span', { className: 'pk-row-g' }, icon('plus')),
             h('span', { className: 'pk-row-l' }, createLabel(r.text)))
-        : h('div', { className: 'pk-row', role: 'option' },
+        : h('div', { className: 'pk-row' + (r.row.disabled ? ' pk-row-off' : ''),
+                     role: 'option', 'aria-disabled': r.row.disabled ? 'true' : null },
             r.row.swatch
               ? h('span', { className: 'pk-swatch ' + r.row.swatch })
               : h('span', { className: 'pk-row-g', style: r.row.color ? { color: r.row.color } : null },
@@ -943,7 +998,7 @@ function openPicker(anchor, opts) {
             h('span', { className: 'pk-row-l' }, markedText(r.row.label, q)),
             r.row.hint ? h('span', { className: 'pk-row-h' }, r.row.hint) : null);
       el.addEventListener('mousedown', (e) => { e.preventDefault(); choose(i); });
-      el.addEventListener('mouseenter', () => { hi = i; paintHi(); });
+      el.addEventListener('mouseenter', () => { if (pickable(i)) { hi = i; paintHi(); } });
       list.appendChild(el);
     });
     paintHi();
@@ -953,6 +1008,7 @@ function openPicker(anchor, opts) {
   async function choose(i) {
     const r = rows[i];
     if (!r) return;
+    if (r.kind === 'item' && r.row.disabled) return;
     if (r.kind === 'create') { await onCreate(r.text); }
     else { await onPick(r.row); }
     if (!multi) { close(); return; }
@@ -963,13 +1019,18 @@ function openPicker(anchor, opts) {
 
   input.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(refresh, 90); });
   input.addEventListener('keydown', (e) => {
-    if (e.key === 'ArrowDown') { e.preventDefault(); if (rows.length) { hi = (hi + 1) % rows.length; paintHi(); } }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); if (rows.length) { hi = (hi - 1 + rows.length) % rows.length; paintHi(); } }
+    if (e.key === 'ArrowDown') { e.preventDefault(); stepHi(1); }
+    else if (e.key === 'ArrowUp') { e.preventDefault(); stepHi(-1); }
     else if (e.key === 'Enter') { e.preventDefault(); choose(hi); }
     else if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); close(); }
   });
 
-  const onDocDown = (e) => { if (!pop.contains(e.target) && e.target !== anchor) close(); };
+  const onDocDown = (e) => {
+    if (pop.contains(e.target)) return;
+    const el = liveAnchor();
+    if (el && el.contains(e.target)) return;
+    close();
+  };
   const onDocKey = (e) => { if (e.key === 'Escape' && document.contains(pop)) close(); };
   document.addEventListener('mousedown', onDocDown, true);
   document.addEventListener('keydown', onDocKey, true);
@@ -988,15 +1049,26 @@ function openPicker(anchor, opts) {
 function chipAdd(glyph, label, open) {
   const btn = h('button', {
     className: 'chip-add', title: label, 'aria-label': label,
+    /* The handle an open popover uses to find this button again after the
+       header it lives in has been rebuilt — see openPicker. The label is the
+       key because it is what makes the button this button: one "Tag", one
+       "Link a page" per chip row. */
+    'data-chip-add': label,
     onClick: (e) => { e.stopPropagation(); open(btn); },
   }, icon(glyph), h('span', { className: 'chip-add-l' }, label));
   return btn;
 }
 
-/** Rows for the tag picker: every tag in the vault, minus the ones already on. */
+/** Rows for the tag picker: every tag in the vault, minus the ones already on.
+ *
+ *  The exclude set is built PER QUERY, not once when the picker opens. The
+ *  picker stays open across picks — that is the whole point of it — and
+ *  `exclude` is the live array each pick pushes into, so a set snapshotted at
+ *  open time went on offering the tag you had just added. Clicking it twice
+ *  put `reference` on the page twice. */
 function tagRows(exclude) {
-  const ex = new Set((exclude || []).map((t) => String(t).toLowerCase()));
   return async (q) => {
+    const ex = new Set((exclude || []).map((t) => String(t).toLowerCase()));
     let all = [];
     try { all = (SB.data().tags().tags || []); } catch (_) {}
     const needle = String(q || '').toLowerCase();
@@ -1008,17 +1080,35 @@ function tagRows(exclude) {
   };
 }
 
-/** Rows for the page picker — the same shell, pages instead of tags. */
+/** Rows for the page picker — the same shell, pages instead of tags.
+ *
+ *  `exclude` is the page's own mention list, and every entry in it is a NAME —
+ *  the text between the brackets. It was tested against `it.id`, which no
+ *  mention has ever been, so the picker went on offering every page you had
+ *  already linked; picking one wrote a duplicate and moved nothing on screen.
+ *  The set is rebuilt per query rather than captured, because the picker stays
+ *  open across picks and the list it is filtering against grows under it. */
 function pageRows(exclude) {
   return async (q) => {
-    const ex = new Set(exclude || []);
+    const ex = new Set((exclude || []).map(normMention));
     let items = [];
     try { items = ((await SB.data().suggestMentions(q || '')).items || []); } catch (_) {}
-    return items.filter((it) => !ex.has(it.id)).slice(0, 40).map((it) => ({
-      key: it.id, label: it.title, id: it.id,
-      icon: (metaForPage(it).icon || 'file-text'),
-      color: metaForPage(it).color, hint: metaForPage(it).label,
-    }));
+    /* An already-linked page is SHOWN, saying so, rather than filtered out.
+       Hiding it means searching for a page you linked yesterday answers
+       "Nothing matches" — with its chip sitting in the row above — and that
+       reads as a broken search, not as an answer. It is not pickable: the
+       one thing a second pick could do is write a duplicate. */
+    const rows = items.map((it) => {
+      const linked = ex.has(normMention(it.title)) || ex.has(normMention(it.path));
+      return {
+        key: it.id, label: it.title, id: it.id, disabled: linked,
+        icon: (metaForPage(it).icon || 'file-text'),
+        color: metaForPage(it).color,
+        hint: linked ? 'linked' : metaForPage(it).label,
+      };
+    });
+    rows.sort((a, b) => Number(a.disabled) - Number(b.disabled));
+    return rows.slice(0, 40);
   };
 }
 
@@ -1359,7 +1449,12 @@ function decorateHashtags(rootEl) {
   }
 }
 
-/* Cached id → {title, kind, slug} map for resolving [[id]] mentions to titles. */
+/* Cached id → {title, kind, slug, path, url} map for resolving [[id]] mentions.
+   `path` and `url` are not decoration: they are the two fields the derived
+   facets are read from — a board is a canvas at a `.excalidraw.md` path, a
+   bookmark is a note carrying a url. An index entry that drops them can only
+   ever answer "note", so every mention chip pointing at a bookmark wore the
+   note glyph. Same bug data.js warns about on its own page objects. */
 let _pageIndexCache = null;
 async function getPageIndex(force) {
   if (_pageIndexCache && !force) return _pageIndexCache;
@@ -1367,7 +1462,8 @@ async function getPageIndex(force) {
     const { items } = await SB.data().pages({ limit: 10000 });
     const map = {};
     (items || []).forEach((p) => {
-      map[p.id] = { title: p.title || p.slug || p.id.slice(0, 8), kind: p.kind, slug: p.slug };
+      map[p.id] = { title: p.title || p.slug || p.id.slice(0, 8), kind: p.kind, slug: p.slug,
+                    path: p.path, url: p.url };
     });
     _pageIndexCache = map;
     return map;
@@ -1479,6 +1575,53 @@ function vaultImage(assetPath, props = {}) {
   return img;
 }
 
+/**
+ * Where an embed's target actually lives, resolved the way Obsidian resolves
+ * it: `![[folder/x.png]]` is a vault-relative PATH, `![[x.png]]` is a
+ * filename to be found wherever it sits.
+ *
+ * This used to be one line — `readBlob('attachments/' + target)` — which
+ * handles the bare-filename form and nothing else. The path form asked for
+ * `attachments/attachments/shot.png`, missed, and drew the path as broken
+ * text. The path form is exactly what the clipper writes (`noteBody` emits
+ * `![[${assetPath}]]`, and `writeAsset` returns `attachments/…`), so every
+ * image ever clipped into a note rendered as its own filename. The file was
+ * on disk the whole time; only the app could not find it.
+ *
+ * Returns `{bytes, path}` — the path as resolved, because the MIME type is
+ * read off the extension and the candidate that answered is the one to ask.
+ */
+async function readEmbedBytes(vault, target) {
+  const t = String(target || '').replace(/^\.?\//, '').trim();
+  if (!vault || !t) return null;
+  const tried = t.includes('/') ? [t] : ['attachments/' + t, t];
+  for (const p of tried) {
+    try {
+      const bytes = await vault.readBlob(p);
+      if (bytes) return { bytes, path: p };
+    } catch (_) { /* next candidate */ }
+  }
+  /* Last resort, and the reason it is worth the directory walk: a file moved
+     out of `attachments/` by hand, or written into a folder of its own, is
+     still findable by name in Obsidian. Showing a broken image over a file
+     that is sitting right there is the worse answer. */
+  try {
+    const want = t.split('/').pop().toLowerCase();
+    const all = await vault.be.listAll();
+    const hit = all.find((x) => String(x.path).split('/').pop().toLowerCase() === want);
+    if (hit) return { bytes: await vault.readBlob(hit.path), path: hit.path };
+  } catch (_) {}
+  return null;
+}
+
+/** Point an <img> at bytes from the vault, with the usual revocation. */
+function paintVaultImage(img, got) {
+  const url = URL.createObjectURL(imageBlob(got.bytes, got.path));
+  img.src = url;
+  img.dataset.objectUrl = url;
+  registerObjectUrl(img, url);
+}
+
 function renderVaultEmbed(target) {
   if (/\.canvas$/i.test(target)) {
     const href = obsidianUrl('canvas/' + target);
@@ -1487,17 +1630,40 @@ function renderVaultEmbed(target) {
   }
   const img = h('img', { className: 'vault-embed vault-embed-img', alt: target });
   const vault = window.SB_VAULT;
+  const miss = () => img.replaceWith(h('span', { className: 'mention-link broken' }, target));
   if (vault) {
-    vault.readBlob('attachments/' + target)
-      .then((bytes) => {
-        const url = URL.createObjectURL(imageBlob(bytes, target));
-        img.src = url;
-        img.dataset.objectUrl = url;
-        registerObjectUrl(img, url);
-      })
-      .catch(() => { img.replaceWith(h('span', { className: 'mention-link broken' }, target)); });
+    readEmbedBytes(vault, target)
+      .then((got) => { if (got) paintVaultImage(img, got); else miss(); })
+      .catch(miss);
   }
   return img;
+}
+
+/**
+ * Markdown images whose src is a vault path, in already-rendered HTML.
+ *
+ * `![alt](attachments/shot.png)` is ordinary markdown, Obsidian renders it,
+ * and an agent writing into the vault will produce it. But the src is a path
+ * on a disk, not a URL, and there is no server here to serve it — the browser
+ * resolved it against the app's own origin, 404'd, and fell back to the alt
+ * text. Same bytes, same object URL and same revocation as an `![[embed]]`.
+ *
+ * Anything the browser can genuinely fetch — http(s), data:, blob: — is left
+ * exactly alone.
+ */
+function decorateVaultImages(rootEl) {
+  const vault = window.SB_VAULT;
+  if (!vault || !rootEl) return;
+  for (const img of rootEl.querySelectorAll('img[src]')) {
+    const raw = img.getAttribute('src') || '';
+    if (!raw || /^(?:[a-z][a-z0-9+.-]*:|\/\/)/i.test(raw)) continue;
+    let target = raw.split('#')[0].split('?')[0];
+    try { target = decodeURIComponent(target); } catch (_) {}
+    img.classList.add('vault-embed', 'vault-embed-img');
+    readEmbedBytes(vault, target)
+      .then((got) => { if (got) paintVaultImage(img, got); else img.classList.add('vault-embed-missing'); })
+      .catch(() => img.classList.add('vault-embed-missing'));
+  }
 }
 
 /* Object-URL bookkeeping: revoke as soon as the element is detached, so
@@ -2882,7 +3048,21 @@ function ListView_Bento(pages, onOpen) {
    it, which is what actually tells two notes apart. Tags and the date sit
    right, quiet. No header band — with the kind inline there is nothing left
    to label, and the strip above already says what you are looking at. */
-function ListView_Table(pages, onOpen) {
+/* `listKind` is the facet the SCREEN claims, and it decides whether a row has
+   to name itself. The kind column was dropped because "in a table the column
+   says what the value means" — but that only holds while every row means the
+   same thing, and the Note list is deliberately inclusive of bookmarks (on
+   disk a bookmark IS a note, so the note count keeps them). So a bookmark sat
+   in a list headed "Note" distinguished by nothing but a 15px glyph in a teal
+   two shades off the note teal, with the word "Bookmark" hidden in a hover
+   title — which is not a label, it is a secret.
+   A row therefore wears its facet exactly when the header cannot speak for
+   it: when the facet differs from the screen's, and on every row of a list
+   that has no single kind at all (All pages, a tag, a mention). */
+function ListView_Table(pages, onOpen, listKind) {
+  // Identity, the same test the project cards and containerRouteOf make:
+  // KIND_META.drawing IS DRAWING_META, and metaForPage returns these objects.
+  const listMeta = listKind ? (KIND_META[listKind] || null) : null;
   return h('div', { className: 'pages-table' },
     pages.map((p) => {
       const m = metaForPage(p);
@@ -2894,7 +3074,12 @@ function ListView_Table(pages, onOpen) {
         h('span', { className: 'row-g', style: { color: m.color || 'var(--muted)' },
                     title: m.label }, icon(m.icon || 'file-text')),
         h('span', { className: 'row-main' },
-          h('span', { className: 'row-t' }, p.title || '(untitled)'),
+          h('span', { className: 'row-hd' },
+            h('span', { className: 'row-t' }, p.title || '(untitled)'),
+            m !== listMeta && m.label
+              ? h('span', { className: 'kind-chip row-k', style: { '--k-c': m.color },
+                            title: m.hint || m.label }, m.label)
+              : null),
           snip ? h('span', { className: 'row-x' }, snip) : null),
         (p.tags || []).length
           ? h('span', { className: 'row-tags' }, p.tags.slice(0, 3).map((t) => TagChip(t)))
@@ -2946,7 +3131,7 @@ function V2PagesList(kind, pages, onOpen, onCreate) {
     else if (kind === 'topic') view = ListView_TopicCards(filtered, onOpen);
     else if (kind === 'markdown') view = ListView_List(filtered, onOpen);
     else if (kind === 'inspo') view = ListView_Bento(filtered, onOpen);
-    else view = ListView_Table(filtered, onOpen);
+    else view = ListView_Table(filtered, onOpen, kind);
     listSlot.appendChild(view);
     // Update count line
     if (countEl) countEl.textContent = (query ? filtered.length + ' of ' : '') + nOf(pages.length, 'page');
@@ -3151,6 +3336,28 @@ function V2PageView(pageId, onChange, onDeleted) {
       });
   };
 
+  /* Which mentions live in the PROSE, and are therefore ours to edit.
+     `page.body` is the prose only: `Vault.get` splits the five structural
+     headings off into `page.sections`, which this app carries verbatim and
+     renders read-only. But `page.mentions` is derived from the whole file, so
+     a `## Links` list puts chips in this row for links that are not in the
+     text `withMention`/`withoutMention` are handed. Everything that writes a
+     link has to know the difference; this is how it knows. */
+  const proseMentions = () => {
+    const set = new Set();
+    try {
+      for (const w of _links().findWikilinks(page.body || '')) {
+        if (!w.embed) set.add(normMention(w.target));
+      }
+    } catch (_) {}
+    return set;
+  };
+  /* Already linked ANYWHERE in the file — prose or a carried section. */
+  const mentionsAlready = (name) => {
+    const want = normMention(name);
+    return (page.mentions || []).some((m) => normMention(m) === want);
+  };
+
   /* Linking a page writes the wikilink into the BODY — `links.withMention`
      says why that is the only place it can go. `page.mentions` is updated beside it
      so the chip appears on the spot; on the next load the array is derived
@@ -3158,12 +3365,19 @@ function V2PageView(pageId, onChange, onDeleted) {
   const linkMention = (name) => {
     const wanted = _links().mentionName(name);
     if (!wanted) return;
+    /* The authority on "already linked" is `mentions`, not the prose.
+       `withMention` refuses a duplicate within the text it is given, and it
+       was only ever given `page.body` — so a page cited in `## Links` (a
+       section that IS scanned for mentions and DOES draw a chip) read as
+       unlinked, and every pick appended a second `[[X]]` under the prose
+       while the chip row did not move. From the outside: a dead button that
+       silently duplicates the link in the file. */
+    if (mentionsAlready(wanted)) return;
     const next = _links().withMention(page.body, wanted);
-    const known = (page.mentions || []).some((m) =>
-      String(m).trim().toLowerCase() === wanted.toLowerCase());
-    if (next === page.body && known) return;      // already linked, and shown
+    if (next === page.body) return;
     page.body = next;
-    if (!known) { page.mentions = page.mentions || []; page.mentions.push(wanted); }
+    page.mentions = page.mentions || [];
+    page.mentions.push(wanted);
     queueSave(); layout();
   };
 
@@ -3177,6 +3391,13 @@ function V2PageView(pageId, onChange, onDeleted) {
       const tried = _links().withoutMention(next, cand);
       if (tried !== next) { next = tried; break; }
     }
+    /* Nothing in the prose answered to it, so the link is in a carried
+       section. Splicing the array would take the chip off the screen and
+       leave the file exactly as it was — the mention is re-derived from that
+       same text on the next load, so the chip came straight back. The chips
+       for carried links do not offer a × at all now; this is the guard behind
+       that, for the ones that arrive by any other route. */
+    if (next === page.body) return;
     page.body = next;
     page.mentions.splice(i, 1);
     queueSave(); layout();
@@ -3369,6 +3590,7 @@ function V2PageView(pageId, onChange, onDeleted) {
       // The same path the prose takes, so a `[[wikilink]]` in a `## Links`
       // section resolves here exactly as it does three inches above it.
       el.appendChild(h('div', { html: SB.data().renderHtml(page.sections).html }));
+      decorateVaultImages(el);
       getPageIndex().then(() => { decorateMentions(el); decorateHashtags(el); }).catch(() => {});
     } catch (e) {
       el.appendChild(h('pre', { className: 'page-carried-raw' }, page.sections));
@@ -3857,6 +4079,7 @@ function V2PageView(pageId, onChange, onDeleted) {
     const md = h('div', { className: 'md-rendered board-body-md' });
     try {
       md.innerHTML = SB.data().renderHtml(page.body).html;
+      decorateVaultImages(md);
       decorateMentions(md);
       decorateHashtags(md);
     } catch (e) { md.textContent = page.body; }
@@ -4511,7 +4734,7 @@ function V2PageView(pageId, onChange, onDeleted) {
         if (item.caption && /\[\[|#\w|https?:\/\//.test(item.caption)) {
           try {
             const rc = h('div', { html: SB.data().renderHtml(item.caption).html });
-            decorateMentions(rc); decorateHashtags(rc);
+            decorateVaultImages(rc); decorateMentions(rc); decorateHashtags(rc);
             cap.appendChild(rc);
           } catch (_) { cap.appendChild(document.createTextNode(item.caption)); }
         } else {
@@ -4557,6 +4780,7 @@ function V2PageView(pageId, onChange, onDeleted) {
           try {
             const r = SB.data().renderHtml(item.note);
             const rendered = h('div', { html: r.html });
+            decorateVaultImages(rendered);
             decorateMentions(rendered);
             decorateHashtags(rendered);
             noteEl.appendChild(rendered);
@@ -5580,6 +5804,9 @@ function V2PageView(pageId, onChange, onDeleted) {
        has to know. */
     const _pjPath = /^projects\/([^/]+)\/([^/]+)\.md$/.exec(page.path || '');
     const isProjectNote = !!(_pjPath && _pjPath[1] === _pjPath[2]);
+    // Computed once per layout, not once per chip.
+    const _prose = proseMentions();
+    const inProse = (mn) => _prose.has(normMention(mn));
 
     const header = h('div', { className: 'page-hd' },
       ancestorBar,
@@ -5633,7 +5860,14 @@ function V2PageView(pageId, onChange, onDeleted) {
           placeholder: 'Find or create a tag…',
           hint: '↑↓ to choose · ⏎ to add · esc to close',
           search: tagRows(page.tags),
-          onPick: (row) => { page.tags.push(row.key); invalidateTagsCache(); queueSave(); layout(); },
+          // Guarded as well as filtered: the list is one defence and it can be
+          // raced (type, pick, type), and a tag on a page twice is a tag the
+          // file now carries twice.
+          onPick: (row) => {
+            const t = String(row.key).toLowerCase();
+            if (page.tags.some((x) => String(x).toLowerCase() === t)) return;
+            page.tags.push(row.key); invalidateTagsCache(); queueSave(); layout();
+          },
           onCreate: (text) => {
             const t = String(text).replace(/^#/, '').trim().toLowerCase();
             if (!t || page.tags.includes(t)) return;
@@ -5654,8 +5888,15 @@ function V2PageView(pageId, onChange, onDeleted) {
           onClick: () => { const t = resolveMention(mn); if (t.id) openPage(t.id); },
           /* Splicing the array was the whole of it, and the array is rebuilt
              from the body on the next load — so the chip came back. The link
-             lives in the text, so that is where it is taken out of. */
-          onRemove: () => { unlinkMention(mn, i); },
+             lives in the text, so that is where it is taken out of.
+             And when the text holding it is a carried `## Links` section —
+             read-only here, by the same rule that keeps the rest of them
+             verbatim — there is no × at all. A control that cannot save its
+             gesture does not get offered. */
+          onRemove: inProse(mn) ? () => { unlinkMention(mn, i); } : null,
+          note: inProse(mn) ? null
+            : 'linked from a ## section this app carries but does not edit — '
+              + 'take it out in the text, or in Obsidian',
         })),
         // Same panel, same keys, pages instead of tags.
         /* Not on a wall. An inspo body is a list of items and `serializeInspoBody`
@@ -6502,7 +6743,7 @@ function lvRenumber(lines, at) {
 }
 
 function LiveSource(opts) {
-  const { placeholder = '', minHeight = 240, onInput, onBlur } = opts;
+  const { placeholder = '', minHeight = 240, onInput, onBlur, onFiles = null } = opts;
 
   const root = h('div', { className: 'md-live' });
   root.setAttribute('contenteditable', 'true');
@@ -6881,6 +7122,14 @@ function LiveSource(opts) {
   root.addEventListener('paste', (e) => {
     e.preventDefault();
     const sr = selRange();
+    /* An image on the clipboard used to fall through to `getData('text/plain')`,
+       which is empty for one, so ⌘V in a note did nothing at all. The caret is
+       handed over as character positions rather than a live DOM Range, because
+       the file has to be written to disk before there is anything to insert
+       and the selection will not survive that await. */
+    const files = [...((e.clipboardData && e.clipboardData.files) || [])]
+      .filter((x) => /^image\//.test(x.type || ''));
+    if (files.length && onFiles && sr) { onFiles(files, sr); return; }
     const t = e.clipboardData && e.clipboardData.getData('text/plain');
     if (!sr || !t) return;
     snap();
@@ -6912,8 +7161,44 @@ function LiveSource(opts) {
       if (atEnd && n >= 0) setCaret({ line: n, off: (lines()[n] || '').length });
     },
     blur() { root.blur(); },
+    /** Insert text at a range captured earlier — the other half of `onFiles`. */
+    insertAt(text, sr) {
+      if (!sr) return;
+      snap();
+      splice(String(text), sr);
+      root.focus();
+    },
   };
 }
+
+/* ── Pasting into prose, app-wide ───────────────────────────────────────
+   One listener for every ProseEditor there will ever be. Per-instance would
+   be simpler to read and wrong to run: the editor is rebuilt on every
+   re-layout of the page — adding a tag does it — so each one would leave a
+   listener behind holding a detached editor. Detached entries are pruned
+   here, at the moment it matters.
+
+   It steps aside for anything with a caret of its own (INPUT, TEXTAREA, any
+   contenteditable — the editor's own source view included, which takes its
+   paste at the caret) and for an open dialog, so an ordinary paste is never
+   hijacked. It also stays out of the way when there is no prose editor
+   mounted at all, which is how the inspo wall's own paste handler still gets
+   its turn. */
+const _prosePaste = new Set();
+function registerProsePaste(entry) { _prosePaste.add(entry); }
+document.addEventListener('paste', async (e) => {
+  for (const t of [..._prosePaste]) if (!document.contains(t.wrap)) _prosePaste.delete(t);
+  const target = [..._prosePaste].find((t) => t.ready());
+  if (!target) return;
+  const el = e.target;
+  if (el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)) return;
+  if (document.querySelector('.modal-bg')) return;
+  const files = [...((e.clipboardData && e.clipboardData.files) || [])]
+    .filter((x) => /^image\//.test(x.type || ''));
+  if (!files.length) return;
+  e.preventDefault();
+  await target.append(files);
+});
 
 /* ── ProseEditor ────────────────────────────────────────────────────────
    ONE writing surface, used by every kind that holds prose.
@@ -6938,6 +7223,46 @@ function ProseEditor(opts) {
 
   const wrap = h('div', { className: 'prose-editor' });
   const view = h('div', { className: 'md-rendered' + (measure ? '' : ' md-wide') });
+
+  /* ── Pasting a picture into prose ──────────────────────────────────────
+     An inspiration wall has taken a pasted image since it existed; a note
+     never has, and neither has a bookmark's context — the surfaces where
+     "here is the screenshot I am talking about" is the most ordinary thing
+     to want. There was nothing clever missing: the paste handler only ever
+     read `text/plain`, which is empty for an image, so ⌘V did nothing and
+     said nothing.
+
+     The bytes go to `attachments/` through the same `writeAsset` the wall
+     and the clipper use — one naming rule, one dedupe, one place on disk —
+     and the body gets `![[attachments/name.png]]`, which is CONVENTION's own
+     embed and what Obsidian reads. (It is also what the clipper writes, and
+     what `readEmbedBytes` above finally resolves.) */
+  async function fileToEmbed(file) {
+    const j = await SB.data().writeAsset(file);
+    if (!j || j.ok === false) throw new Error(j && j.reason ? j.reason : 'refused');
+    return `![[${j.path}]]`;
+  }
+
+  /* Named, because a clipboard screenshot arrives as "image.png" every time
+     and a folder of `image-7.png` is a folder of nothing. `writeAsset`
+     already suffixes a collision, so this only has to be descriptive. */
+  function pastedName(file, i) {
+    const ext = (/^image\/(\w+)/.exec(file.type || '') || [, 'png'])[1]
+      .replace('jpeg', 'jpg').replace('svg+xml', 'svg');
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
+    return new File([file], `pasted-${stamp}${i ? '-' + (i + 1) : ''}.${ext}`,
+                    { type: file.type });
+  }
+
+  async function embedsFor(files) {
+    const out = [];
+    for (let i = 0; i < files.length; i++) {
+      try { out.push(await fileToEmbed(pastedName(files[i], i))); }
+      catch (e) { toast('Image not saved — ' + (e.message || e), { tone: 'error' }); }
+    }
+    return out;
+  }
+
   const src = LiveSource({
     placeholder,
     minHeight,
@@ -6948,6 +7273,15 @@ function ProseEditor(opts) {
        not to have — and it is also the moment the text should reach disk,
        so the blur both renders and commits rather than waiting out a timer. */
     onBlur: () => { if (mode === 'edit') setMode('view'); },
+    // Paste while editing: the picture lands where the caret is.
+    onFiles: async (files, sr) => {
+      const embeds = await embedsFor(files);
+      if (!embeds.length) return;
+      src.insertAt(embeds.join('\n') + '\n', sr);
+      setValue(src.value);
+      schedule();
+      toast(nOf(embeds.length, 'image') + ' saved to attachments/');
+    },
   });
   const ta = src.el;
   if (!measure) ta.classList.add('md-wide');
@@ -6970,6 +7304,7 @@ function ProseEditor(opts) {
       const r = SB.data().renderHtml(body);
       const rendered = h('div', { html: r.html });
       await getPageIndex();
+      decorateVaultImages(rendered);
       decorateMentions(rendered);
       decorateHashtags(rendered);
       view.appendChild(rendered);
@@ -7019,6 +7354,27 @@ function ProseEditor(opts) {
       setTimeout(() => src.focus(true), 0);
     }
   }
+
+  /* And paste while READING, which is the more common half: the note is open,
+     it is not in edit mode, and ⌘V should still mean "put this here". Appended
+     to the end, because that is where a thought being added goes. Registered
+     with the one app-wide listener below rather than hooking `document` per
+     instance — a ProseEditor is rebuilt on every re-layout, so adding a tag
+     would leave another listener behind. */
+  registerProsePaste({
+    wrap,
+    ready: () => mode !== 'edit',      // editing? LiveSource has the caret.
+    append: async (files) => {
+      const embeds = await embedsFor(files);
+      if (!embeds.length) return;
+      const body = getValue() || '';
+      setValue((body.replace(/\s+$/, '') + '\n\n' + embeds.join('\n') + '\n').replace(/^\n+/, ''));
+      src.value = getValue() || '';
+      paint();
+      if (opts.onDone) opts.onDone();
+      toast(nOf(embeds.length, 'image') + ' added to this page');
+    },
+  });
 
   wrap.appendChild(h('div', { className: 'prose-editor-hd' },
     label ? h('span', { className: 'prose-editor-l' }, label) : h('span'),
