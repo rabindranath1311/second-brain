@@ -553,6 +553,29 @@ const HANDLERS = {
     await setMeta(PAGES_KEY, pageList(ctx));
     return { ok: true, walls: list };
   },
+  /**
+   * Re-read the folder so "add to a page" can offer the pages that are
+   * actually in it.
+   *
+   * The cached list existed from the start; nothing refreshed it. It was
+   * written on connect, on Check, and after a flush — so a page made in the
+   * app five minutes ago was not in it, and searching for that page answered
+   * "no notes by that name". The one place that needs the list current is the
+   * popup, and the popup never asked. Now it does, without blocking: it paints
+   * from the cache and repaints when this lands.
+   *
+   * Never requests permission — like `flush`, so a locked folder is a reason
+   * to say so, not a dialog nobody asked for.
+   */
+  refreshPages: async () => {
+    const ctx = await openVault();
+    if (!ctx.ok) return { ok: false, reason: ctx.reason, message: ctx.message };
+    const pages = pageList(ctx);
+    const walled = walls(ctx);
+    await setMeta(PAGES_KEY, pages);
+    await setMeta(WALLS_KEY, walled);
+    return { ok: true, pages, walls: walled };
+  },
   badge: () => paintBadge(),
 };
 

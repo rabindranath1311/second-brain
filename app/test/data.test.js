@@ -231,6 +231,31 @@ test("6.18 mention-suggest works offline and ranks prefixes first", async () => 
   assert.ok((await d.suggestMentions("gee")).items.some((i) => i.title === "Gee"));
 });
 
+test("a suggestion carries the two fields the derived facets are read from", async () => {
+  // `path` says whether a canvas is a board; `url` says whether a note is a
+  // bookmark. A suggestion that drops them can only ever be drawn as a plain
+  // note, which is how the link picker came to put the note glyph on every
+  // bookmark in the vault — the same omission `page()` warns about.
+  const files = {
+    "notes/Marginalia.md": md(P("01AAAAAAAAAAAAAAAAAAAAAAAA",
+      { title: "Marginalia", url: "https://example.com/a" }), "clipped"),
+    "notes/Draft link.md": md(P("01BBBBBBBBBBBBBBBBBBBBBBBB",
+      { title: "Draft link", url: "" }), "a bookmark with no address yet"),
+    "canvas/Sketches.excalidraw.md": md(P("01CCCCCCCCCCCCCCCCCCCCCCCC",
+      { title: "Sketches", kind: "canvas" }), "## Drawing"),
+  };
+  const v = new Vault(new MemoryBackend(files), { now: () => TS(30) });
+  await v.buildIndex();
+  const d = new Data(v, { now: () => new Date(TS(30)) });
+  const by = Object.fromEntries(
+    (await d.suggestMentions("")).items.map((i) => [i.title, i]));
+  assert.equal(by.Marginalia.url, "https://example.com/a");
+  // Present-but-empty survives: `url: ""` is a bookmark in progress, and the
+  // whole model asks `url != null`, never truthiness.
+  assert.equal(by["Draft link"].url, "");
+  assert.match(by.Sketches.path, /\.excalidraw\.md$/);
+});
+
 test("pages() filters by kind, tag and query, newest first", async () => {
   const d = await fixture();
   assert.equal((await d.pages({ kind: "topic" })).count, 1);

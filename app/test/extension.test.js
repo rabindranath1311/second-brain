@@ -69,3 +69,26 @@ test("the clipper's own files are not the app's", () => {
   const bg = read("extension/background.js");
   assert.ok(!/localhost|127\.0\.0\.1|vercel/i.test(bg));
 });
+
+test("the popup's page list keeps a bookmark's empty address", async () => {
+  /* The picker behind "add to a page" offers notes and bookmarks separately,
+     and the only thing telling them apart is whether `url` is present. A
+     bookmark whose address has not been filled in yet carries `url: ""` — the
+     presence of the key IS the fact, which is why every reader in the model
+     asks `url != null`. `|| null` flattened that and filed it under notes, in
+     the one list whose whole job is the distinction. */
+  const { pageList } = await import("../../extension/writer.js");
+  const { Vault, MemoryBackend } = await import("../vault/vault.js");
+  const { serialize } = await import("../vault/mdfile.js");
+  const at = "2026-07-20T12:00:00+00:00";
+  const md = (over) => serialize({ id: over.id, kind: "note", title: over.title,
+                                   created: at, updated: at, ...over }, "x");
+  const v = new Vault(new MemoryBackend({
+    "notes/Plain.md": md({ id: "01AAAAAAAAAAAAAAAAAAAAAAAA", title: "Plain" }),
+    "notes/Draft.md": md({ id: "01BBBBBBBBBBBBBBBBBBBBBBBB", title: "Draft", url: "" }),
+  }));
+  await v.buildIndex();
+  const by = Object.fromEntries(pageList({ vault: v }).map((p) => [p.title, p]));
+  assert.equal(by.Plain.url, null, "a note has no address at all");
+  assert.equal(by.Draft.url, "", "a bookmark in progress keeps its empty one");
+});

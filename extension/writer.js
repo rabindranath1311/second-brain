@@ -107,8 +107,11 @@ export function pageList(ctx) {
   return ctx.vault.list()
     // `url` comes along because it is what separates a bookmark from a note —
     // the convention has one kind for both, and the picker offers one at a time.
+    // `??`, not `||`: the PRESENCE of the key is the fact — a bookmark whose
+    // address is still empty is a bookmark, and `|| null` filed it under
+    // notes, in the one list whose whole job is telling the two apart.
     .map((e) => ({ id: e.id, title: e.title, path: e.path, kind: e.kind,
-                   url: e.url || null, updated: e.updated }))
+                   url: e.url ?? null, updated: e.updated }))
     .sort((a, b) => String(b.updated || "").localeCompare(String(a.updated || "")));
 }
 

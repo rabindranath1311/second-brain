@@ -705,8 +705,11 @@ export class Data {
     }
     scored.sort((a, b) => a.rank - b.rank || a.label.localeCompare(b.label));
     return {
+      /* `url` travels with the rest: a bookmark is a note carrying one, so a
+         suggestion that drops it can only ever be drawn as a plain note — the
+         same omission that made bookmarks look unimplemented elsewhere. */
       items: scored.slice(0, limit).map((s) => ({
-        id: s.e.id, title: s.label, kind: s.e.kind, path: s.e.path,
+        id: s.e.id, title: s.label, kind: s.e.kind, path: s.e.path, url: s.e.url,
       })),
     };
   }

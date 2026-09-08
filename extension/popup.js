@@ -56,14 +56,14 @@ const DEST = {
     where: () => "→ notes/ — a page you can write on",
     rows: ["title", "source", "author", "description", "site", "note", "tags", "mentions"],
     picture: "optional", highlight: true, noteLabel: "note",
-    accepts: (p) => p.kind === "note" && !p.url, acceptsWhat: "notes",
+    accepts: (p) => p.kind === "note" && p.url == null, acceptsWhat: "notes",
   },
   bookmark: {
     verb: "Save bookmark", folder: "notes/",
     where: () => "→ notes/ — the site kept as a card",
     rows: ["title", "source", "author", "description", "site", "note", "tags", "mentions"],
     picture: "none", highlight: false, noteLabel: "note",
-    accepts: (p) => p.kind === "note" && Boolean(p.url), acceptsWhat: "bookmarks",
+    accepts: (p) => p.kind === "note" && p.url != null, acceptsWhat: "bookmarks",
   },
   inspo: {
     verb: "Save to wall", folder: "inspo/",
@@ -90,6 +90,39 @@ let mode = "new";          // "new" | "append"
 let chosen = null;         // the page an append is aimed at
 let pickedImage = null;    // the src of an image a right-click pointed at
 let mentions = [];         // page titles this capture links to
+/* Is there anything new to save?
+   The form used to sit there fully loaded after a save — same title, same
+   note, same target — with Save straight back to enabled and Enter still
+   bound to it from every single-line field. So the second press filed the
+   same clip again, and the popup gave no sign that the first one had landed
+   beyond one line of status text. Clearing the form is half the answer;
+   this is the other half, because a blanked form still saves a duplicate
+   bookmark of the page you are standing on. Save is armed when there is
+   something new in the form, and a save disarms it. */
+let armed = true;
+let busy = false;          // a write is in the air
+/* Some pages Chrome will not let an extension read at all. That used to be
+   enforced by poking `disabled` on the button once, during init — and any
+   later repaint (the page list arriving, a destination change) put it back.
+   It is a state, so it lives with the other two. */
+let savable = true;
+
+/* The Save button's whole state, in one place: what it says and whether it
+   can fire. "Saved" rather than a dead "Save note" — a disabled button with
+   its old label on it looks broken, and this one is not broken, it is done. */
+function paintSave() {
+  const d = DEST[dest];
+  $("save").disabled = busy || !armed || !savable;
+  $("save").textContent = armed ? d.verb : "Saved";
+  $("save").title = armed ? "" : "Already saved — change something to save again";
+}
+
+/** Anything the user typed or toggled means there is something new again. */
+function rearm() {
+  if (armed) return;
+  armed = true;
+  paintSave();
+}
 
 function status(text, tone = "") {
   const el = $("status");
@@ -225,26 +258,58 @@ function drawHits(box, hits, onPick, empty) {
     t.textContent = p.title;
     const k = document.createElement("span");
     k.className = "tiny muted";
-    k.textContent = p.url ? "bookmark" : p.kind;
+    k.textContent = p.url != null ? "bookmark" : p.kind;
     row.append(t, k);
     row.addEventListener("click", () => onPick(p));
     box.appendChild(row);
   }
 }
 
+/* The walls the vault actually has, offered to the `wall` field.
+   The <datalist> has been in the markup since the field existed and nothing
+   ever filled it: the names were cached on every flush, the input advertised
+   them with `list="walls"`, and the dropdown was empty every time. So naming
+   a wall meant remembering it exactly, and one typo made a second wall
+   instead of adding to the first — which is the one mistake this field is
+   shaped to prevent. */
+function paintWalls() {
+  const dl = $("walls");
+  dl.textContent = "";
+  for (const w of state.walls || []) {
+    const o = document.createElement("option");
+    o.value = w.title;
+    dl.appendChild(o);
+  }
+}
+
+/* Why the list is empty, when it is — and it is never "no pages by that name"
+   unless there were pages to look through. A blank list under a blank reason
+   is how "I cannot save to an existing page" starts: the folder is locked, or
+   the cached list has not been read yet, and the form said neither. */
+function pickEmpty(d, q, pool) {
+  const v = (state && state.vault) || {};
+  if (!v.name) return "Connect a vault above and your pages appear here.";
+  if (v.permission !== "granted") return "Unlock the vault above to see your pages.";
+  if (!(state.pages || []).length) return "Reading your vault…";
+  if (!pool.length) return `No ${d.acceptsWhat} in the vault yet.`;
+  return q ? `No ${d.acceptsWhat} by that name.` : "";
+}
+
+/* Typing narrows; typing nothing shows the most recently touched, because the
+   page you want to add to is usually the page you were just in. `pageList` is
+   already sorted newest-first, so this is a slice, not a sort. */
 function paintPicks() {
   const d = DEST[dest];
   const q = $("pick").value.trim().toLowerCase();
-  if (!q) { $("pick-results").textContent = ""; return; }
-  const hits = (state.pages || [])
-    .filter(d.accepts)
-    .filter((p) => String(p.title || "").toLowerCase().includes(q))
+  const pool = (state.pages || []).filter(d.accepts);
+  const hits = (q ? pool.filter((p) => String(p.title || "").toLowerCase().includes(q)) : pool)
     .slice(0, 6);
   drawHits($("pick-results"), hits, (p) => {
     chosen = p;
     $("pick").value = "";
+    armed = true;
     paintForm();
-  }, `No ${d.acceptsWhat} by that name.`);
+  }, pickEmpty(d, q, pool));
 }
 
 /** Mentions may point anywhere — a link is not an append, and the graph is not
@@ -259,6 +324,7 @@ function paintMentionSearch() {
   drawHits($("mention-results"), hits, (p) => {
     mentions = [...mentions, p.title];
     $("mention").value = "";
+    armed = true;
     paintForm();
   }, "No page by that name.");
 }
@@ -275,6 +341,7 @@ function paintChips() {
     chip.textContent = `[[${name}]] ✕`;
     chip.addEventListener("click", () => {
       mentions = mentions.filter((m) => m !== name);
+      armed = true;
       paintForm();
     });
     box.appendChild(chip);
@@ -287,7 +354,6 @@ function paintForm() {
   seg($("dest"), "dest", dest);
   seg($("mode"), "mode", mode);
   $("dest-where").textContent = d.where(state);
-  $("save").textContent = d.verb;
   $("note-label").textContent = d.noteLabel;
   $("mode-new").textContent = dest === "inspo" ? "A wall" : "New page";
 
@@ -345,10 +411,12 @@ function paintForm() {
     : (mode === "append" ? `Pick one of your ${d.acceptsWhat} above.` : "");
   $("pick-chosen").className = chosen ? "tiny ok" : "tiny warn";
 
+  paintWalls();
   paintPicks();
   paintMentionSearch();
   paintChips();
   paintName();
+  paintSave();
 }
 
 function paint() {
@@ -361,6 +429,63 @@ function paint() {
 async function refresh() {
   state = await send("state");
   paint();
+}
+
+/* The cached page list is a snapshot from the last connect, Check or flush, so
+   anything made in the app since then was missing from "add to a page" — which
+   is most of what you would want to add to. This re-reads the folder and
+   repaints, deliberately WITHOUT being awaited: the popup opens on the cache
+   and corrects itself a moment later, rather than holding the form shut behind
+   a directory walk. A locked or missing vault is not an error here — the
+   picker's own empty line already says so. */
+function refreshPagesSoon() {
+  send("refreshPages").then((r) => {
+    if (!r || r.ok === false || !state) return;
+    state.pages = r.pages || state.pages;
+    state.walls = r.walls || state.walls;
+    paintForm();
+  }).catch(() => {});
+}
+
+/** The page's own account of itself, into the fields that hold it. Used on
+ *  open and again after a save, so the form comes back as a fresh capture of
+ *  the page you are still standing on rather than as the one you just filed. */
+function prefillFromPage() {
+  const m = meta && meta.ok !== false ? meta : null;
+  $("title").value = (m && m.title) || (tab && tab.title) || "";
+  $("title").placeholder = "";
+  $("source").value = (m && m.url) || (tab && tab.url) || "";
+  $("author").value = (m && m.og && m.og.author) || "";
+  $("description").value = (m && m.og && m.og.description) || "";
+  $("siteName").value = (m && m.og && m.og.siteName) || host(tab && tab.url);
+}
+
+/**
+ * Back to a blank slate, after something was filed.
+ *
+ * The fields the PAGE supplied come back; the fields YOU supplied — the note,
+ * the tags, the links, the picture, the page an append was aimed at — are
+ * cleared, because those described the capture that just went. Saving the
+ * same page twice on purpose still works: type the second note and Save arms
+ * itself again. It just costs a deliberate keystroke instead of nothing.
+ */
+function resetAfterSave() {
+  // A right-click capture and a picked image are consumed by the save that
+  // used them; keeping either would attach it to the next clip as well.
+  pending = null;
+  pickedImage = null;
+  chosen = null;
+  mode = "new";
+  mentions = [];
+  picture = "none";
+  for (const id of ["note", "tags", "pick", "mention"]) $(id).value = "";
+  $("highlight").checked = false;
+  prefillFromPage();
+  armed = false;
+  paintForm();
+  // The next thing typed belongs in the note, not in a title that is already
+  // correct — a second clip from one page is almost always a second thought.
+  $("note").focus();
 }
 
 /** Everything on screen, as the worker's `saveCapture` wants it. */
@@ -407,22 +532,34 @@ function report(r) {
 
 async function act(fn) {
   status("Working…");
-  $("save").disabled = true;
+  busy = true;
+  paintSave();
   let r;
   try {
     r = await fn();
   } catch (e) {
     status(String((e && e.message) || e), "bad");
-    $("save").disabled = false;
+    busy = false;
     await refresh();
     return;
   }
+  /* Queued IS filed: the capture is in the worker's queue and will be written
+     the moment the folder is reachable, so pressing Save again would queue a
+     second copy — a locked vault is exactly when a duplicate is easiest to
+     make and hardest to notice. Anything that never reached the queue (a
+     cancelled region drag, a picture that could not be fetched) leaves the
+     form alone, because nothing was saved and the user still wants it. */
+  busy = false;
+  if (r && r.queued) resetAfterSave();
   await refresh();
-  $("save").disabled = false;
   report(r);
 }
 
 async function save() {
+  /* Enter saves from every single-line field in this form, so the disabled
+     button is only half the guard — the other half is here, or a stray Return
+     after a save files the whole thing again with nothing changed. */
+  if (busy || !armed || !savable) return;
   if (mode === "append" && !chosen) {
     status(`Pick the ${DEST[dest].acceptsWhat.replace(/s$/, "")} it should be added to.`, "warn");
     $("pick").focus();
@@ -448,6 +585,7 @@ $("dest").addEventListener("click", (e) => {
   if (!b) return;
   dest = b.dataset.dest;
   chrome.storage.local.set({ [DEST_KEY]: dest });
+  armed = true;
   paintForm();
 });
 
@@ -455,6 +593,7 @@ $("mode").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-mode]");
   if (!b) return;
   mode = b.dataset.mode;
+  armed = true;
   paintForm();
   if (mode === "append") $("pick").focus();
 });
@@ -463,8 +602,16 @@ $("picture").addEventListener("click", (e) => {
   const b = e.target.closest("button[data-pic]");
   if (!b || b.disabled) return;
   picture = b.dataset.pic;
+  armed = true;
   paintForm();
 });
+
+/* Typing or toggling anything is "there is something new here" — including in
+   the two searches, where the act of looking for a page to append to is the
+   start of the next capture. Capture phase, so a field that stops the event
+   still re-arms. */
+document.addEventListener("input", rearm, true);
+document.addEventListener("change", rearm, true);
 
 $("title").addEventListener("input", paintName);
 $("pick").addEventListener("input", paintPicks);
@@ -508,20 +655,20 @@ for (const [id, box] of [["pick", "pick-results"], ["mention", "mention-results"
   }
 
   await refresh();
+  refreshPagesSoon();
   if (!/^https?:/i.test(tab.url || "")) {
     status("This page cannot be saved — Chrome blocks extensions here.", "warn");
-    $("save").disabled = true;
+    savable = false;
+    paintSave();
     return;
   }
 
   meta = await send("meta", { tab });
   if (meta && meta.ok !== false) {
     // The page's own account of itself, prefilled and editable.
-    $("title").value = meta.title || tab.title || "";
-    $("source").value = (pending && pending.url) || meta.url || tab.url || "";
-    $("author").value = (meta.og && meta.og.author) || "";
-    $("description").value = (meta.og && meta.og.description) || "";
-    $("siteName").value = (meta.og && meta.og.siteName) || host(tab.url);
+    prefillFromPage();
+    // A link picked out of a context menu is its own address, not this page's.
+    if (pending && pending.url) $("source").value = pending.url;
     if (meta.selection) {
       $("highlight").checked = true;
       if (!remembered && !pending) dest = "note";
